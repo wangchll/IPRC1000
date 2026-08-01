@@ -16,6 +16,7 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root_dir/.build/arm64-apple-macosx/release/IPRC1000Adapter" \
     "$app/Contents/MacOS/IPRC1000Adapter"
 cp "$root_dir/NOTICE.md" "$app/Contents/Resources/NOTICE.md"
+cp "$root_dir/LICENSE" "$app/Contents/Resources/LICENSE"
 cp "$root_dir/Vendor/Source/sbc-2.2.tar.xz" "$app/Contents/Resources/sbc-2.2.tar.xz"
 cp "$root_dir/App/Assets/IPRC1000.icns" "$app/Contents/Resources/IPRC1000.icns"
 cp "$root_dir/App/Assets/IPRC1000-Remote.png" "$app/Contents/Resources/IPRC1000-Remote.png"

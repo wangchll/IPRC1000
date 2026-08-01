@@ -1,5 +1,7 @@
 # IPRC1000 Adapter for macOS
 
+![IPRC1000 Adapter 功能总览](docs/images/overview.jpg)
+
 IPRC1000 Adapter 是一款常驻 macOS 菜单栏的遥控器适配工具，面向产品名为
 `IPRC1000`、VID/PID 为 `0A5C:8502` 的 Broadcom/Cypress 蓝牙遥控器。它可以拦截
 遥控器原始键值，将每个按键重新映射为 Mac 单键、组合键或媒体键。
@@ -7,6 +9,20 @@ IPRC1000 Adapter 是一款常驻 macOS 菜单栏的遥控器适配工具，面�
 > 当前项目只匹配 `IPRC1000 + 0A5C:8502`。应用会监听全局键盘事件以过滤遥控器的
 > 原始键值，但只有与目标遥控器 HID 报告的键码和时间戳匹配时才会拦截；其他输入设备
 > 的普通事件会直接放行。
+
+## 下载与安装
+
+从 [GitHub Releases](https://github.com/wangchll/IPRC1000/releases/latest) 下载
+`IPRC1000-Adapter-0.1.0.dmg`：
+
+1. 打开 DMG，把 `IPRC1000 Adapter.app` 拖入“应用程序”。
+2. 首次启动时，如果 macOS 提示无法验证开发者，先尝试打开一次应用，然后进入
+   “系统设置 → 隐私与安全性”，在安全性区域选择“仍要打开”。
+3. 回到应用，根据提示授予“输入监控”和“辅助功能”权限。
+
+当前发布包使用 ad-hoc 签名，没有 Developer ID，也没有经过 Apple 公证。ad-hoc 签名能
+保证 App Bundle 内部代码签名一致，但不能向 Gatekeeper 证明开发者身份，因此首次打开会
+有额外安全提示。请只从本仓库 Release 下载，并在安装前核对 Release 中的 SHA-256。
 
 ## 功能
 
@@ -47,11 +63,11 @@ SWIFT_MODULECACHE_PATH=/private/tmp/iprc1000-module-cache \
 生成 `.app`：
 
 ```sh
-IPRC1000_CODE_SIGN_IDENTITY=- scripts/package-app.sh
+scripts/package-app.sh
 open "dist/IPRC1000 Adapter.app"
 ```
 
-`-` 表示本机 ad-hoc 签名。正式分发时，将 `IPRC1000_CODE_SIGN_IDENTITY` 替换为
+打包脚本默认使用 ad-hoc 签名。正式分发时，可将 `IPRC1000_CODE_SIGN_IDENTITY` 设置为
 Developer ID Application 签名身份。打包脚本会替换现有的
 `dist/IPRC1000 Adapter.app`。
 

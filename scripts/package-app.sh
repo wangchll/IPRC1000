@@ -5,7 +5,7 @@ root_dir=${0:A:h:h}
 sdk=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
 cache_dir=/private/tmp/iprc1000-module-cache
 app="$root_dir/dist/IPRC1000 Adapter.app"
-sign_identity=${IPRC1000_CODE_SIGN_IDENTITY:-31D9871026ADFB361FF038FFB6B7F5A21766E77F}
+sign_identity=${IPRC1000_CODE_SIGN_IDENTITY:--}
 
 mkdir -p "$cache_dir"
 SDKROOT="$sdk" CLANG_MODULE_CACHE_PATH="$cache_dir" SWIFT_MODULECACHE_PATH="$cache_dir" \

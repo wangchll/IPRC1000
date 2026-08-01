@@ -13,7 +13,7 @@ IPRC1000 Adapter 是一款常驻 macOS 菜单栏的遥控器适配工具，面�
 ## 下载与安装
 
 从 [GitHub Releases](https://github.com/wangchll/IPRC1000/releases/latest) 下载
-`IPRC1000-Adapter-0.1.0.dmg`：
+`IPRC1000-Adapter-0.2.0-GitHub-AdHoc.dmg`：
 
 1. 打开 DMG，把 `IPRC1000 Adapter.app` 拖入“应用程序”。
 2. 首次启动时，如果 macOS 提示无法验证开发者，先尝试打开一次应用，然后进入
@@ -107,6 +107,11 @@ scripts/build-libsbc.sh
 
 映射保存在当前 macOS 用户的应用偏好设置中。右上角“恢复默认”会重置所有按键，
 因此使用前请确认不再需要现有自定义配置。
+
+按键映射页底部支持多组配置 Tab：使用“+”复制当前映射并创建自动编号的新配置组，单击
+Tab 切换配置组，双击 Tab 可重命名，“-”用于删除当前组（至少保留一组）。搜索框可按
+遥控器按键名、HID 值或映射动作查找条目。“导出”只保存当前选中的配置组；“导入”只会
+替换当前组的按键映射，不影响其他配置组。
 
 ### 默认映射
 

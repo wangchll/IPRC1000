@@ -1,6 +1,7 @@
 import AppKit
 import Darwin
 import SwiftUI
+import UniformTypeIdentifiers
 
 @main
 @MainActor
@@ -396,6 +397,10 @@ struct SettingsView: View {
     @ObservedObject private var mappings: MappingStore
     @State private var editingKey: RemoteKey?
     @State private var section: SettingsSection = .overview
+    @State private var mappingSearch = ""
+    @State private var profileName = ""
+    @State private var renamingProfileID: UUID?
+    @State private var message: String?
 
     init(model: AppModel) {
         self.model = model
@@ -429,6 +434,18 @@ struct SettingsView: View {
                 mappings.values[key] = binding
             }
         }
+        .alert("重命名配置组", isPresented: Binding(
+            get: { renamingProfileID != nil },
+            set: { if !$0 { renamingProfileID = nil } }
+        )) {
+            TextField("配置组名称", text: $profileName)
+            Button("取消", role: .cancel) { renamingProfileID = nil }
+            Button("确定") { renameProfile() }
+                .disabled(profileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .alert("按键配置", isPresented: Binding(
+            get: { message != nil }, set: { if !$0 { message = nil } }
+        )) { Button("好") { message = nil } } message: { Text(message ?? "") }
     }
 
     private var configuredCount: Int {
@@ -556,14 +573,14 @@ struct SettingsView: View {
     }
 
     private var mappingView: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            pageHeader("按键映射", subtitle: "所有遥控器按键均可设置为单键、组合键或媒体键", icon: "switch.2") {
-                Button("恢复默认") { mappings.reset() }
-            }
+        VStack(alignment: .leading, spacing: 14) {
+            pageHeader("按键映射", subtitle: "每个配置组独立保存按键动作", icon: "switch.2")
+
+            mappingToolbar
 
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    ForEach(RemoteKey.allCases) { key in
+                    ForEach(filteredRemoteKeys) { key in
                         Button {
                             editingKey = key
                         } label: {
@@ -597,10 +614,150 @@ struct SettingsView: View {
                 }
                 .padding(.vertical, 2)
             }
+            if filteredRemoteKeys.isEmpty {
+                ContentUnavailableView("没有匹配的按键", systemImage: "magnifyingglass", description: Text("请尝试其他关键词"))
+            }
+
+            profileTabs
         }
         .padding(.top, 42)
         .padding(.horizontal, 28)
         .padding(.bottom, 22)
+    }
+
+    private var mappingToolbar: some View {
+        HStack(spacing: 10) {
+            Label(mappings.activeProfile?.name ?? "配置组", systemImage: "square.stack.3d.up.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.blue)
+
+            Spacer()
+
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("搜索按键、HID 或动作", text: $mappingSearch)
+                    .textFieldStyle(.plain)
+                if !mappingSearch.isEmpty {
+                    Button { mappingSearch = "" } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(width: 255, height: 34)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.22)) }
+
+            Button { importConfiguration() } label: {
+                Label("导入", systemImage: "square.and.arrow.down")
+            }
+            .buttonStyle(.bordered)
+            Button { exportConfiguration() } label: {
+                Label("导出", systemImage: "square.and.arrow.up")
+            }
+            .buttonStyle(.bordered)
+            Button("恢复默认") { mappings.reset() }
+                .buttonStyle(.bordered)
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var profileTabs: some View {
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(mappings.profiles) { profile in
+                        Button {
+                            mappings.selectProfile(profile.id)
+                        } label: {
+                            HStack(spacing: 7) {
+                                Circle()
+                                    .fill(profile.id == mappings.activeProfileID ? Color.blue : Color.secondary.opacity(0.35))
+                                    .frame(width: 7, height: 7)
+                                Text(profile.name).lineLimit(1)
+                            }
+                            .font(.callout.weight(profile.id == mappings.activeProfileID ? .semibold : .regular))
+                            .foregroundStyle(profile.id == mappings.activeProfileID ? Color.blue : Color.primary)
+                            .padding(.horizontal, 13)
+                            .frame(height: 34)
+                            .background(
+                                profile.id == mappings.activeProfileID ? Color.blue.opacity(0.13) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 9)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .simultaneousGesture(TapGesture(count: 2).onEnded {
+                            beginRenaming(profile)
+                        })
+                        .help("单击切换，双击重命名")
+                    }
+                }
+            }
+
+            Divider().frame(height: 24)
+
+            Button { mappings.addProfile() } label: {
+                Image(systemName: "plus").frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless)
+            .help("复制当前映射并新建配置组")
+
+            Button(role: .destructive) { mappings.deleteActiveProfile() } label: {
+                Image(systemName: "minus").frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless)
+            .disabled(mappings.profiles.count == 1)
+            .help("删除当前配置组")
+        }
+        .padding(8)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
+        .overlay { RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.2)) }
+    }
+
+    private var filteredRemoteKeys: [RemoteKey] {
+        let query = mappingSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return RemoteKey.allCases }
+        return RemoteKey.allCases.filter { key in
+            let hid = String(format: "HID 0x%02X", key.rawValue)
+            return key.title.localizedCaseInsensitiveContains(query)
+                || hid.localizedCaseInsensitiveContains(query)
+                || (mappings.values[key] ?? .none).title.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func beginRenaming(_ profile: MappingStore.Profile) {
+        mappings.selectProfile(profile.id)
+        profileName = profile.name
+        renamingProfileID = profile.id
+    }
+
+    private func renameProfile() {
+        if let renamingProfileID { mappings.renameProfile(renamingProfileID, to: profileName) }
+        renamingProfileID = nil
+    }
+
+    private func exportConfiguration() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "IPRC1000-\(mappings.activeProfile?.name ?? "配置组").json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try mappings.exportActiveProfileData().write(to: url, options: .atomic)
+            message = "已导出“\(mappings.activeProfile?.name ?? "当前配置组")”。"
+        } catch { message = "导出失败：\(error.localizedDescription)" }
+    }
+
+    private func importConfiguration() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try mappings.importIntoActiveProfile(Data(contentsOf: url))
+            message = "已导入到“\(mappings.activeProfile?.name ?? "当前配置组")”。"
+        } catch { message = "导入失败：\(error.localizedDescription)" }
     }
 
     private var diagnosticsView: some View {

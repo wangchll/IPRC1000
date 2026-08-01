@@ -310,42 +310,173 @@ enum HIDReportParser {
 
 @MainActor
 final class MappingStore: ObservableObject {
+    struct Profile: Identifiable, Equatable {
+        let id: UUID
+        var name: String
+        var values: [RemoteKey: KeyBinding]
+    }
+
+    private struct StoredProfile: Codable {
+        let id: UUID
+        var name: String
+        var bindings: [String: KeyBinding]
+    }
+
+    private struct ConfigurationFile: Codable {
+        let version: Int
+        var profiles: [StoredProfile]
+    }
+
     @Published var values: [RemoteKey: KeyBinding] {
-        didSet { save() }
+        didSet {
+            guard !isLoading, let index = profiles.firstIndex(where: { $0.id == activeProfileID }) else { return }
+            profiles[index].values = values
+            save()
+        }
+    }
+    @Published private(set) var profiles: [Profile]
+    @Published private(set) var activeProfileID: UUID {
+        didSet {
+            guard !isLoading, let profile = activeProfile else { return }
+            isLoading = true
+            values = profile.values
+            isLoading = false
+            save()
+        }
     }
 
     init(defaults: UserDefaults = .standard) {
-        if let data = defaults.data(forKey: "keyBindings"),
+        self.userDefaults = defaults
+        if let data = defaults.data(forKey: "mappingProfilesV1"),
+           let stored = try? JSONDecoder().decode([StoredProfile].self, from: data),
+           !stored.isEmpty {
+            var loadedProfiles = stored.map(Self.profile(from:))
+            if let index = loadedProfiles.firstIndex(where: { $0.name == "默认配置" }) {
+                loadedProfiles[index].name = "默认配置组 1"
+            }
+            let savedID = defaults.string(forKey: "activeMappingProfileID").flatMap(UUID.init(uuidString:))
+            let loadedActiveID = loadedProfiles.contains(where: { $0.id == savedID })
+                ? savedID! : loadedProfiles[0].id
+            profiles = loadedProfiles
+            activeProfileID = loadedActiveID
+            values = loadedProfiles.first(where: { $0.id == loadedActiveID })!.values
+        } else if let data = defaults.data(forKey: "keyBindings"),
            let raw = try? JSONDecoder().decode([String: KeyBinding].self, from: data) {
-            values = Self.defaults
+            var migrated = Self.defaults
             for (key, binding) in raw {
                 if let usage = UInt8(key), let remoteKey = RemoteKey(rawValue: usage) {
-                    values[remoteKey] = binding
+                    migrated[remoteKey] = binding
                 }
             }
+            let profile = Profile(id: UUID(), name: "默认配置组 1", values: migrated)
+            profiles = [profile]
+            activeProfileID = profile.id
+            values = migrated
         } else if let data = defaults.data(forKey: "keyMappings"),
                   let raw = try? JSONDecoder().decode([String: LegacyKeyAction].self, from: data) {
-            values = Self.defaults
+            var migrated = Self.defaults
             for (key, action) in raw {
                 if let usage = UInt8(key), let remoteKey = RemoteKey(rawValue: usage) {
-                    values[remoteKey] = KeyBinding(legacy: action)
+                    migrated[remoteKey] = KeyBinding(legacy: action)
                 }
             }
+            let profile = Profile(id: UUID(), name: "默认配置组 1", values: migrated)
+            profiles = [profile]
+            activeProfileID = profile.id
+            values = migrated
         } else {
+            let profile = Profile(id: UUID(), name: "默认配置组 1", values: Self.defaults)
+            profiles = [profile]
+            activeProfileID = profile.id
             values = Self.defaults
         }
-        self.userDefaults = defaults
+        save()
     }
 
-    private var userDefaults: UserDefaults = .standard
+    private let userDefaults: UserDefaults
+    private var isLoading = false
+
+    var activeProfile: Profile? { profiles.first(where: { $0.id == activeProfileID }) }
+
+    func selectProfile(_ id: UUID) {
+        guard profiles.contains(where: { $0.id == id }) else { return }
+        activeProfileID = id
+    }
+
+    func addProfile() {
+        let profile = Profile(id: UUID(), name: nextDefaultProfileName(), values: values)
+        profiles.append(profile)
+        activeProfileID = profile.id
+    }
+
+    func renameProfile(_ id: UUID, to requestedName: String) {
+        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
+        let name = requestedName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { return }
+        profiles[index].name = name
+        save()
+    }
+
+    func deleteActiveProfile() {
+        guard profiles.count > 1,
+              let index = profiles.firstIndex(where: { $0.id == activeProfileID }) else { return }
+        profiles.remove(at: index)
+        activeProfileID = profiles[min(index, profiles.count - 1)].id
+    }
+
+    func exportActiveProfileData() throws -> Data {
+        guard let activeProfile else { throw ConfigurationError.invalidFile }
+        let file = ConfigurationFile(version: 1, profiles: [Self.stored(from: activeProfile)])
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(file)
+    }
+
+    func importIntoActiveProfile(_ data: Data) throws {
+        let file = try JSONDecoder().decode(ConfigurationFile.self, from: data)
+        guard file.version == 1, let stored = file.profiles.first else {
+            throw ConfigurationError.invalidFile
+        }
+        values = Self.profile(from: stored).values
+    }
 
     func reset() { values = Self.defaults }
 
     private func save() {
-        let raw = Dictionary(uniqueKeysWithValues: values.map { (String($0.key.rawValue), $0.value) })
-        if let data = try? JSONEncoder().encode(raw) {
-            userDefaults.set(data, forKey: "keyBindings")
+        if let data = try? JSONEncoder().encode(profiles.map(Self.stored(from:))) {
+            userDefaults.set(data, forKey: "mappingProfilesV1")
+            userDefaults.set(activeProfileID.uuidString, forKey: "activeMappingProfileID")
         }
+    }
+
+    private func nextDefaultProfileName() -> String {
+        let existing = Set(profiles.map(\.name))
+        var number = 1
+        while existing.contains("默认配置组 \(number)") { number += 1 }
+        return "默认配置组 \(number)"
+    }
+
+    private static func stored(from profile: Profile) -> StoredProfile {
+        StoredProfile(
+            id: profile.id,
+            name: profile.name,
+            bindings: Dictionary(uniqueKeysWithValues: profile.values.map { (String($0.key.rawValue), $0.value) })
+        )
+    }
+
+    private static func profile(from stored: StoredProfile) -> Profile {
+        var values = defaults
+        for (key, binding) in stored.bindings {
+            if let usage = UInt8(key), let remoteKey = RemoteKey(rawValue: usage) {
+                values[remoteKey] = binding
+            }
+        }
+        return Profile(id: stored.id, name: stored.name, values: values)
+    }
+
+    enum ConfigurationError: LocalizedError {
+        case invalidFile
+        var errorDescription: String? { "配置文件版本不受支持或不包含任何配置组。" }
     }
 
     static let defaults: [RemoteKey: KeyBinding] = [

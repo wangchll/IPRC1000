@@ -19,3 +19,13 @@
   above before calling them project or toolchain defects.
 - Run `scripts/package-app.sh` only when packaging and code signing are required;
   it replaces the existing app under `dist/` and invokes `codesign`.
+
+## Packaging variants
+
+- Every packaging delivery must produce two separate artifacts without allowing
+  one variant to overwrite the other:
+  - GitHub Release artifact: use ad-hoc signing (`codesign --sign -`).
+  - Local installation/test artifact: use the user's previously configured
+    signing identity via `IPRC1000_CODE_SIGN_IDENTITY`.
+- Give the two artifacts distinct names and verify each artifact's signature
+  with `codesign` before reporting packaging complete.

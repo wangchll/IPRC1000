@@ -99,6 +99,42 @@ enum SelfTest {
                   "legacy arrow mapping migration", into: &failures)
             check(migrated.values[.last] == .keyboard(48, modifiers: [.command]),
                   "legacy shortcut mapping migration", into: &failures)
+            check(migrated.activeProfile?.name == "默认配置组 1",
+                  "legacy profile name migration", into: &failures)
+            migrated.addProfile()
+            check(migrated.activeProfile?.name == "默认配置组 2",
+                  "automatic profile naming", into: &failures)
+            let secondProfileID = migrated.activeProfileID
+            migrated.renameProfile(secondProfileID, to: "演示")
+            check(migrated.activeProfile?.name == "演示",
+                  "profile renaming", into: &failures)
+            migrated.values[.heart] = shortcut
+            let firstProfileID = migrated.profiles[0].id
+            migrated.selectProfile(firstProfileID)
+            check(migrated.values[.heart] == KeyBinding.none,
+                  "profile switching restores bindings", into: &failures)
+            migrated.selectProfile(secondProfileID)
+            check(migrated.values[.heart] == shortcut,
+                  "profile switching preserves bindings", into: &failures)
+            let reloaded = MappingStore(defaults: defaults)
+            check(reloaded.profiles.count == 2 && reloaded.values[.heart] == shortcut,
+                  "profile collection persistence", into: &failures)
+            if let exported = try? migrated.exportActiveProfileData() {
+                let importSuite = "local.iprc1000.adapter.importtest.\(UUID().uuidString)"
+                if let importDefaults = UserDefaults(suiteName: importSuite) {
+                    let destination = MappingStore(defaults: importDefaults)
+                    try? destination.importIntoActiveProfile(exported)
+                    check(destination.profiles.count == 1 && destination.values[.heart] == shortcut,
+                          "active profile export and replacement import", into: &failures)
+                    check(destination.activeProfile?.name == "默认配置组 1",
+                          "import preserves selected profile name", into: &failures)
+                    importDefaults.removePersistentDomain(forName: importSuite)
+                } else {
+                    failures.append("configuration import test defaults")
+                }
+            } else {
+                failures.append("configuration export")
+            }
             defaults.removePersistentDomain(forName: suiteName)
         } else {
             failures.append("legacy mapping test defaults")

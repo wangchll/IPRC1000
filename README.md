@@ -129,6 +129,12 @@ macOS，应用还会监听全局键盘事件，并通过键码和硬件时间戳
 极端同时按键情况下仍存在很小的时间关联碰撞可能。详见源码中的
 `HIDController.swift` 和 `RemoteEventFilter.swift`。
 
+## 实验与研究记录
+
+- [IPRC1000 语音实验记录](docs/VOICE_EXPERIMENT_NOTES.md)：汇总已尝试的协议路径、真机
+  观察、碰壁原因、证据边界和后续探索建议。该内容仅用于继续研究，不代表当前语音功能
+  已实现。
+
 ## License 与第三方代码
 
 第三方 libsbc 的源码归档和许可证说明见 `Vendor/Source/sbc-2.2.tar.xz` 与 `NOTICE.md`。

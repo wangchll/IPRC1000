@@ -1,0 +1,154 @@
+import Foundation
+
+@MainActor
+enum SelfTest {
+    static func run() -> Bool {
+        var failures: [String] = []
+        check(HIDReportParser.usages(from: [1, 0, 0, 0x52, 0, 0, 0, 0, 0]) == [0x52],
+              "HID report ID parsing", into: &failures)
+        check(HIDReportParser.usages(from: [1, 0, 0, 0x0C, 0, 0, 0, 0, 0]).isEmpty,
+              "spurious 0x0C filter", into: &failures)
+        check(HIDReportParser.rawUsages(from: [1, 0, 0, 0x0C, 0, 0, 0, 0, 0]) == [0x0C],
+              "raw spurious 0x0C capture", into: &failures)
+        check(HIDReportParser.usages(from: [0, 0, 0x28, 0, 0, 0, 0, 0]) == [0x28],
+              "HID payload parsing", into: &failures)
+        check(TargetRemote.matches(
+            vendorID: 0x0A5C, productID: 0x8502, productName: "IPRC1000"
+        ), "target model matching", into: &failures)
+        check(TargetRemote.matches(
+            vendorID: 0x0A5C, productID: 0x8502, productName: "IPRC1000"
+        ), "same-model replacement acceptance", into: &failures)
+        check(!TargetRemote.matches(
+            vendorID: 0x05AC, productID: 0x0342, productName: "Apple Keyboard"
+        ), "other keyboard rejection", into: &failures)
+        check(!TargetRemote.matches(
+            vendorID: 0x0A5C, productID: 0x8503, productName: "IPRC1000"
+        ), "other product rejection", into: &failures)
+        check(RemoteKey.allCases.allSatisfy {
+            RemoteEventFilter.virtualKeyCode(for: $0.rawValue) != nil
+        }, "all remote usages have source key codes", into: &failures)
+        check(RemoteEventFilter.virtualKeyCode(for: 0x0C) == 34,
+              "spurious i source key code", into: &failures)
+        let artworkCanvas = CGRect(origin: .zero, size: RemoteKeyArtwork.canvasSize)
+        check(RemoteKey.allCases.allSatisfy {
+            artworkCanvas.contains(RemoteKeyArtwork.rect(for: $0))
+        }, "all remote keys have in-bounds artwork regions", into: &failures)
+        var correlator = RemoteEventCorrelator()
+        correlator.note(keyCode: 34, isDown: true, timestamp: 1_000_000_000)
+        check(!correlator.consume(
+            keyCode: 0, isDown: true, isRepeat: false, timestamp: 1_000_000_100
+        ),
+              "other keyboard key is not filtered", into: &failures)
+        check(correlator.consume(
+            keyCode: 34, isDown: true, isRepeat: false, timestamp: 1_050_000_000
+        ),
+              "device-correlated delayed spurious i is filtered", into: &failures)
+        check(correlator.consume(
+            keyCode: 34, isDown: true, isRepeat: true, timestamp: 1_100_000_000
+        ), "spurious i autorepeat is filtered", into: &failures)
+        check(!correlator.consume(
+            keyCode: 34, isDown: true, isRepeat: false, timestamp: 1_100_000_100
+        ), "physical keyboard i is not filtered", into: &failures)
+        check(!correlator.consume(
+            keyCode: 34, isDown: true, isRepeat: true, timestamp: 1_110_000_000
+        ), "physical keyboard i autorepeat is not filtered", into: &failures)
+        check(!correlator.consume(
+            keyCode: 34, isDown: false, isRepeat: false, timestamp: 1_120_000_000
+        ), "physical keyboard i release is not filtered", into: &failures)
+        check(correlator.consume(
+            keyCode: 34, isDown: true, isRepeat: true, timestamp: 1_130_000_000
+        ), "remote i autorepeat resumes after physical i release", into: &failures)
+        correlator.note(keyCode: 34, isDown: false, timestamp: 1_200_000_000)
+        check(correlator.consume(
+            keyCode: 34, isDown: false, isRepeat: false, timestamp: 1_200_000_100
+        ), "spurious i release is filtered", into: &failures)
+        check(!correlator.consume(
+            keyCode: 34, isDown: true, isRepeat: true, timestamp: 1_300_000_000
+        ), "spurious i autorepeat stops after release", into: &failures)
+
+        let shortcut = KeyBinding.keyboard(
+            1, modifiers: [.control, .option, .shift, .command, .function]
+        )
+        check(shortcut.title == "⌃⌥⇧⌘fnS", "five-modifier shortcut title", into: &failures)
+        if let encoded = try? JSONEncoder().encode(shortcut),
+           let decoded = try? JSONDecoder().decode(KeyBinding.self, from: encoded) {
+            check(decoded == shortcut, "shortcut persistence round trip", into: &failures)
+        } else {
+            failures.append("shortcut persistence round trip")
+        }
+        let fnOnly = KeyBinding.modifierOnly([.function])
+        check(fnOnly.title == "fn", "standalone Fn title", into: &failures)
+        check(fnOnly.kind == .keyboard && fnOnly.keyCode == nil,
+              "standalone Fn representation", into: &failures)
+        check(KeyModifier.function.keyCode == 63, "standalone Fn key code", into: &failures)
+        if let encoded = try? JSONEncoder().encode(fnOnly),
+           let decoded = try? JSONDecoder().decode(KeyBinding.self, from: encoded) {
+            check(decoded == fnOnly, "standalone Fn persistence round trip", into: &failures)
+        } else {
+            failures.append("standalone Fn persistence round trip")
+        }
+        check(MappingStore.defaults[.microphone] == KeyBinding.none,
+              "microphone mapping defaults to unassigned", into: &failures)
+
+        let suiteName = "local.iprc1000.adapter.selftest.\(UUID().uuidString)"
+        if let defaults = UserDefaults(suiteName: suiteName) {
+            defaults.set(Data(#"{"82":"arrowUp","6":"appSwitcher"}"#.utf8),
+                         forKey: "keyMappings")
+            let migrated = MappingStore(defaults: defaults)
+            check(migrated.values[.up] == .keyboard(126),
+                  "legacy arrow mapping migration", into: &failures)
+            check(migrated.values[.last] == .keyboard(48, modifiers: [.command]),
+                  "legacy shortcut mapping migration", into: &failures)
+            defaults.removePersistentDomain(forName: suiteName)
+        } else {
+            failures.append("legacy mapping test defaults")
+        }
+        let microphoneMap = [String(RemoteKey.microphone.rawValue): shortcut]
+        if let data = try? JSONEncoder().encode(microphoneMap),
+           let decoded = try? JSONDecoder().decode([String: KeyBinding].self, from: data) {
+            check(decoded[String(RemoteKey.microphone.rawValue)] == shortcut,
+                  "microphone custom shortcut persistence", into: &failures)
+        } else {
+            failures.append("microphone custom shortcut persistence")
+        }
+
+        let bytes = hex("""
+            01 08 AD 00 00 37 65 54 34 33 7D DD AD 5F 77 6B 57 DD DA D5
+            F7 76 B5 7D DD AD 5F 77 6B 57 5D DA D5 A9 74 B9 29 A5 92 09
+            59 6B A1 71 DD 90 B4 55 51 32 21 0A 94 77 33 12 9A DC D4 00
+            """)
+        var state = VoicePacketAssembler.State()
+        _ = VoicePacketAssembler.append(Array(bytes[0..<20]), to: &state)
+        _ = VoicePacketAssembler.append(Array(bytes[20..<40]), to: &state)
+        let frame = VoicePacketAssembler.append(Array(bytes[40..<60]), to: &state)
+        check(frame?.count == 57 && frame?.prefix(4) == [0xAD, 0x00, 0x00, 0x37],
+              "three-packet mSBC assembly", into: &failures)
+        if let frame, let decoder = MSBCDecoder() {
+            check(decoder.decode(frame)?.count == 120,
+                  "official mSBC sample decodes to 120 samples", into: &failures)
+        } else {
+            failures.append("mSBC decoder initialization")
+        }
+
+        var adpcm = [UInt8](repeating: 0, count: 134)
+        adpcm[5] = 0
+        let adpcmPCM = GoogleVoiceADPCM.decode(adpcm)
+        check(adpcmPCM?.count == 256 && adpcmPCM?.allSatisfy { $0 == 0 } == true,
+              "Google Voice ADPCM packet decoding", into: &failures)
+
+        if failures.isEmpty {
+            print("SELF-TEST PASS: model isolation, event filter, HID/voice decoders, custom shortcuts and legacy mapping migration")
+            return true
+        }
+        for failure in failures { FileHandle.standardError.write(Data("SELF-TEST FAIL: \(failure)\n".utf8)) }
+        return false
+    }
+
+    private static func check(_ condition: Bool, _ label: String, into failures: inout [String]) {
+        if !condition { failures.append(label) }
+    }
+
+    private static func hex(_ value: String) -> [UInt8] {
+        value.split(whereSeparator: { $0.isWhitespace }).compactMap { UInt8($0, radix: 16) }
+    }
+}

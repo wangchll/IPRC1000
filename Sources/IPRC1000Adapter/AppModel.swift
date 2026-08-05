@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
     private let voice = VoiceController()
     private var started = false
     private var hidStarted = false
+    private var heldBindings: [RemoteKey: KeyBinding] = [:]
 
     func start() {
         guard !started else { return }
@@ -35,7 +36,23 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.lastKey = key.title
                 self.lastRemoteKey = key
-                KeyEmitter.emit(self.mappings.values[key] ?? .none)
+                let binding = self.mappings.values[key] ?? .none
+                if binding.requiresReleaseEvent { self.heldBindings[key] = binding }
+                KeyEmitter.emit(binding)
+            }
+        }
+        hid.onKeyRepeat = { [weak self] key in
+            Task { @MainActor in
+                guard let self else { return }
+                KeyEmitter.emitRepeat(self.mappings.values[key] ?? .none)
+            }
+        }
+        hid.onKeyUp = { [weak self] key in
+            Task { @MainActor in
+                guard let self else { return }
+                let binding = self.heldBindings.removeValue(forKey: key)
+                    ?? self.mappings.values[key] ?? .none
+                KeyEmitter.release(binding)
             }
         }
         voice.onStatus = { [weak self] message, ready in

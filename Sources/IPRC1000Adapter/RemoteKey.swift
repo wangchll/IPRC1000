@@ -55,6 +55,7 @@ enum RemoteKey: UInt8, CaseIterable, Codable, Identifiable {
         case .unknown16: "未标记键 0x16"
         }
     }
+
 }
 
 private enum LegacyKeyAction: String, Codable {
@@ -118,6 +119,10 @@ enum KeyModifier: String, CaseIterable, Codable, Identifiable {
         case .command: 55
         case .function: 63
         }
+    }
+
+    func eventType(isDown: Bool) -> CGEventType {
+        .flagsChanged
     }
 }
 
@@ -265,6 +270,22 @@ struct KeyBinding: Codable, Equatable {
             guard let keyCode else { return prefix.isEmpty ? "未选择按键" : prefix }
             return prefix + MacKeyboard.label(for: keyCode)
         }
+    }
+
+    var repeatsWhileHeld: Bool {
+        switch kind {
+        case .keyboard: keyCode != nil
+        case .media: mediaKey == .volumeUp || mediaKey == .volumeDown
+        case .none: false
+        }
+    }
+
+    var requiresReleaseEvent: Bool {
+        kind == .keyboard && keyCode == nil && !modifiers.isEmpty
+    }
+
+    var isFunctionOnly: Bool {
+        kind == .keyboard && keyCode == nil && modifiers == [.function]
     }
 
     fileprivate init(legacy: LegacyKeyAction) {

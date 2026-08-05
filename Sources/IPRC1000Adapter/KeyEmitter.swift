@@ -1,9 +1,16 @@
 import AppKit
 import CoreGraphics
 import IOKit.hidsystem
+import os
 
 enum KeyEmitter {
+    static let functionVirtualKey: CGKeyCode = 63
+    private static let logger = Logger(subsystem: "local.iprc1000.adapter", category: "KeyEmitter")
     static func emit(_ binding: KeyBinding) {
+        if binding.isFunctionOnly {
+            functionEvent(isDown: true)
+            return
+        }
         switch binding.kind {
         case .none:
             return
@@ -14,7 +21,7 @@ enum KeyEmitter {
                 }
                 keyboard(CGKeyCode(keyCode), flags: flags)
             } else {
-                modifierKeys(binding.modifiers)
+                modifierKeysDown(binding.modifiers)
             }
         case .media:
             switch binding.mediaKey {
@@ -29,6 +36,33 @@ enum KeyEmitter {
         }
     }
 
+    static func emitRepeat(_ binding: KeyBinding) {
+        guard binding.repeatsWhileHeld else { return }
+        emit(binding)
+    }
+
+    static func release(_ binding: KeyBinding) {
+        guard binding.requiresReleaseEvent else { return }
+        if binding.isFunctionOnly {
+            functionEvent(isDown: false)
+            return
+        }
+        modifierKeysUp(binding.modifiers)
+    }
+
+    private static func functionEvent(isDown: Bool) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let event = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: functionVirtualKey,
+            keyDown: false
+        ) else { return }
+        event.type = .flagsChanged
+        event.flags = isDown ? .maskSecondaryFn : []
+        logger.notice("synthetic Fn flagsChanged down=\(isDown, privacy: .public) keyCode=63")
+        post(event)
+    }
+
     private static func keyboard(_ code: CGKeyCode, flags: CGEventFlags = []) {
         let source = CGEventSource(stateID: .hidSystemState)
         for down in [true, false] {
@@ -38,7 +72,7 @@ enum KeyEmitter {
         }
     }
 
-    private static func modifierKeys(_ modifiers: Set<KeyModifier>) {
+    private static func modifierKeysDown(_ modifiers: Set<KeyModifier>) {
         let ordered = KeyModifier.allCases.filter { modifiers.contains($0) }
         let source = CGEventSource(stateID: .hidSystemState)
         var flags = CGEventFlags()
@@ -50,11 +84,16 @@ enum KeyEmitter {
                 virtualKey: modifier.keyCode,
                 keyDown: true
             ) else { continue }
-            event.type = .flagsChanged
+            event.type = modifier.eventType(isDown: true)
             event.flags = flags
             post(event)
         }
+    }
 
+    private static func modifierKeysUp(_ modifiers: Set<KeyModifier>) {
+        let ordered = KeyModifier.allCases.filter { modifiers.contains($0) }
+        let source = CGEventSource(stateID: .hidSystemState)
+        var flags = modifiers.reduce(CGEventFlags()) { $0.union($1.eventFlag) }
         for modifier in ordered.reversed() {
             flags.remove(modifier.eventFlag)
             guard let event = CGEvent(
@@ -62,7 +101,7 @@ enum KeyEmitter {
                 virtualKey: modifier.keyCode,
                 keyDown: false
             ) else { continue }
-            event.type = .flagsChanged
+            event.type = modifier.eventType(isDown: false)
             event.flags = flags
             post(event)
         }

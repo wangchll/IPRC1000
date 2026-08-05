@@ -16,8 +16,8 @@ enum SelfTest {
             vendorID: 0x0A5C, productID: 0x8502, productName: "IPRC1000"
         ), "target model matching", into: &failures)
         check(TargetRemote.matches(
-            vendorID: 0x0A5C, productID: 0x8502, productName: "IPRC1000"
-        ), "same-model replacement acceptance", into: &failures)
+            vendorID: 0x0A5C, productID: 0x8502, productName: "Broadcom Bluetooth Wireless Remote Control"
+        ), "same-model product-name variation acceptance", into: &failures)
         check(!TargetRemote.matches(
             vendorID: 0x05AC, productID: 0x0342, productName: "Apple Keyboard"
         ), "other keyboard rejection", into: &failures)
@@ -81,6 +81,24 @@ enum SelfTest {
         check(fnOnly.kind == .keyboard && fnOnly.keyCode == nil,
               "standalone Fn representation", into: &failures)
         check(KeyModifier.function.keyCode == 63, "standalone Fn key code", into: &failures)
+        check(KeyModifier.function.eventType(isDown: true) == .flagsChanged
+              && KeyModifier.function.eventType(isDown: false) == .flagsChanged,
+              "standalone Fn uses flags changed events", into: &failures)
+        check(KeyModifier.command.eventType(isDown: true) == .flagsChanged,
+              "standard modifiers use flags changed events", into: &failures)
+        check(shortcut.repeatsWhileHeld, "keyboard shortcut repeats while held", into: &failures)
+        check(!fnOnly.repeatsWhileHeld, "standalone Fn remains held without repeat reports", into: &failures)
+        check(fnOnly.requiresReleaseEvent, "standalone Fn keeps a release lifecycle", into: &failures)
+        check(fnOnly.isFunctionOnly, "standalone Fn uses sticky lifecycle", into: &failures)
+        check(!shortcut.requiresReleaseEvent, "keyboard shortcut does not use modifier release", into: &failures)
+        check(KeyBinding.media(.volumeUp).repeatsWhileHeld,
+              "volume media key repeats while held", into: &failures)
+        check(!KeyBinding.media(.playPause).repeatsWhileHeld,
+              "play pause does not repeat while held", into: &failures)
+        check(HIDController.repeatingKey(for: 126, pressed: [0x52]) == .up,
+              "held remote key resolves from suppressed repeat", into: &failures)
+        check(HIDController.repeatingKey(for: 34, pressed: [0x0C]) == nil,
+              "spurious i repeat is never translated", into: &failures)
         if let encoded = try? JSONEncoder().encode(fnOnly),
            let decoded = try? JSONDecoder().decode(KeyBinding.self, from: encoded) {
             check(decoded == fnOnly, "standalone Fn persistence round trip", into: &failures)

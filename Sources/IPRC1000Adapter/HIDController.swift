@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import IOKit.hid
 import os
@@ -10,7 +11,6 @@ enum TargetRemote {
     static func matches(vendorID: Int?, productID: Int?, productName: String?) -> Bool {
         vendorID == self.vendorID
             && productID == self.productID
-            && productName == self.productName
     }
 
     static func matches(_ device: IOHIDDevice) -> Bool {
@@ -58,6 +58,8 @@ final class HIDController: @unchecked Sendable {
     private static let logger = Logger(subsystem: "local.iprc1000.adapter", category: "HIDReport")
     var onStatus: @Sendable (String, Bool) -> Void = { _, _ in }
     var onKey: @Sendable (RemoteKey) -> Void = { _ in }
+    var onKeyRepeat: @Sendable (RemoteKey) -> Void = { _ in }
+    var onKeyUp: @Sendable (RemoteKey) -> Void = { _ in }
 
     private let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
     private let eventFilter = RemoteEventFilter()
@@ -69,10 +71,14 @@ final class HIDController: @unchecked Sendable {
     }
 
     func start() {
+        eventFilter.onRepeat = { [weak self] keyCode in
+            guard let self,
+                  let key = Self.repeatingKey(for: keyCode, pressed: self.pressed) else { return }
+            self.onKeyRepeat(key)
+        }
         let matching: [String: Any] = [
             kIOHIDVendorIDKey as String: TargetRemote.vendorID,
-            kIOHIDProductIDKey as String: TargetRemote.productID,
-            kIOHIDProductKey as String: TargetRemote.productName
+            kIOHIDProductIDKey as String: TargetRemote.productID
         ]
         IOHIDManagerSetDeviceMatching(manager, matching as CFDictionary)
         let context = Unmanaged.passUnretained(self).toOpaque()
@@ -99,6 +105,7 @@ final class HIDController: @unchecked Sendable {
         onStatus("IPRC1000 已连接，设备级过滤与按键适配已启用", true)
     }
 
+
     private func logDescriptor(for device: IOHIDDevice) {
         func number(_ key: String) -> Int {
             (IOHIDDeviceGetProperty(device, key as CFString) as? NSNumber)?.intValue ?? -1
@@ -120,6 +127,9 @@ final class HIDController: @unchecked Sendable {
     fileprivate func removed(_ device: IOHIDDevice) {
         if currentDevice === device {
             currentDevice = nil
+            for usage in pressed where usage != 0x0C {
+                if let key = RemoteKey(rawValue: usage) { onKeyUp(key) }
+            }
             pressed = []
             onStatus("等待 IPRC1000 连接", false)
         }
@@ -135,11 +145,19 @@ final class HIDController: @unchecked Sendable {
         )
         for usage in removed {
             eventFilter.note(usage: usage, isDown: false, hidTimestamp: timestamp)
+            if usage != 0x0C, let key = RemoteKey(rawValue: usage) { onKeyUp(key) }
         }
         for usage in added {
             eventFilter.note(usage: usage, isDown: true, hidTimestamp: timestamp)
             if usage != 0x0C, let key = RemoteKey(rawValue: usage) { onKey(key) }
         }
         pressed = next
+    }
+
+    static func repeatingKey(for keyCode: CGKeyCode, pressed: Set<UInt8>) -> RemoteKey? {
+        guard let usage = pressed.first(where: {
+            $0 != 0x0C && RemoteEventFilter.virtualKeyCode(for: $0) == keyCode
+        }) else { return nil }
+        return RemoteKey(rawValue: usage)
     }
 }

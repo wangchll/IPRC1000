@@ -73,6 +73,7 @@ private func remoteEventTapCallback(
 final class RemoteEventFilter: @unchecked Sendable {
     static let syntheticMarker: Int64 = 0x49505243
     private static let logger = Logger(subsystem: "local.iprc1000.adapter", category: "EventFilter")
+    var onRepeat: @Sendable (CGKeyCode) -> Void = { _ in }
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
@@ -120,6 +121,10 @@ final class RemoteEventFilter: @unchecked Sendable {
             timestamp: event.timestamp
         )
         lock.unlock()
+        if matched, type == .keyDown,
+           event.getIntegerValueField(.keyboardEventAutorepeat) != 0 {
+            onRepeat(keyCode)
+        }
         if matched {
             Self.logger.notice(
                 "CG key=\(keyCode, privacy: .public) down=\(type == .keyDown, privacy: .public) repeat=\(event.getIntegerValueField(.keyboardEventAutorepeat) != 0, privacy: .public) timestamp=\(event.timestamp, privacy: .public) suppress=\(matched, privacy: .public)"

@@ -13,7 +13,7 @@ IPRC1000 Adapter 是一款常驻 macOS 菜单栏的遥控器适配工具，面�
 ## 下载与安装
 
 从 [GitHub Releases](https://github.com/wangchll/IPRC1000/releases/latest) 下载
-`IPRC1000-Adapter-0.2.0-GitHub-AdHoc.dmg`：
+`IPRC1000-Adapter-0.2.1-GitHub-AdHoc.dmg`：
 
 1. 打开 DMG，把 `IPRC1000 Adapter.app` 拖入“应用程序”。
 2. 首次启动时，如果 macOS 提示无法验证开发者，先尝试打开一次应用，然后进入

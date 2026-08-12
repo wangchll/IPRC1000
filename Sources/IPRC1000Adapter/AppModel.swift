@@ -36,6 +36,12 @@ final class AppModel: ObservableObject {
                 guard let self else { return }
                 self.lastKey = key.title
                 self.lastRemoteKey = key
+                if key == .unknown16 {
+                    if let profileName = self.mappings.selectNextProfile() {
+                        self.lastKey = "已切换：\(profileName)"
+                    }
+                    return
+                }
                 let binding = self.mappings.values[key] ?? .none
                 if binding.requiresReleaseEvent { self.heldBindings[key] = binding }
                 KeyEmitter.emit(binding)
@@ -44,12 +50,14 @@ final class AppModel: ObservableObject {
         hid.onKeyRepeat = { [weak self] key in
             Task { @MainActor in
                 guard let self else { return }
+                guard key != .unknown16 else { return }
                 KeyEmitter.emitRepeat(self.mappings.values[key] ?? .none)
             }
         }
         hid.onKeyUp = { [weak self] key in
             Task { @MainActor in
                 guard let self else { return }
+                guard key != .unknown16 else { return }
                 let binding = self.heldBindings.removeValue(forKey: key)
                     ?? self.mappings.values[key] ?? .none
                 KeyEmitter.release(binding)

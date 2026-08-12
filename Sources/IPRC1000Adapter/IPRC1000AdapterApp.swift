@@ -582,7 +582,7 @@ struct SettingsView: View {
                 LazyVStack(spacing: 8) {
                     ForEach(filteredRemoteKeys) { key in
                         Button {
-                            editingKey = key
+                            if key != .unknown16 { editingKey = key }
                         } label: {
                             HStack(spacing: 14) {
                                 RemoteKeyThumbnail(key: key)
@@ -592,10 +592,10 @@ struct SettingsView: View {
                                         .font(.caption.monospaced()).foregroundStyle(.secondary)
                                 }
                                 Spacer()
-                                Text((mappings.values[key] ?? .none).title)
+                                Text(key == .unknown16 ? "切换到下一配置组" : (mappings.values[key] ?? .none).title)
                                     .font(.system(.body, design: .rounded).weight(.medium))
                                     .lineLimit(1).foregroundStyle(.primary)
-                                Image(systemName: "chevron.right")
+                                Image(systemName: key == .unknown16 ? "arrow.triangle.2.circlepath" : "chevron.right")
                                     .foregroundStyle(.secondary)
                             }
                             .padding(.horizontal, 14)
@@ -610,6 +610,7 @@ struct SettingsView: View {
                             }
                         }
                         .buttonStyle(.plain)
+                        .allowsHitTesting(key != .unknown16)
                     }
                 }
                 .padding(.vertical, 2)
@@ -723,6 +724,7 @@ struct SettingsView: View {
             let hid = String(format: "HID 0x%02X", key.rawValue)
             return key.title.localizedCaseInsensitiveContains(query)
                 || hid.localizedCaseInsensitiveContains(query)
+                || (key == .unknown16 && "切换到下一配置组".localizedCaseInsensitiveContains(query))
                 || (mappings.values[key] ?? .none).title.localizedCaseInsensitiveContains(query)
         }
     }

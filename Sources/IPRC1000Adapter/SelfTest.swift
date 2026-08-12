@@ -119,6 +119,18 @@ enum SelfTest {
                   "legacy shortcut mapping migration", into: &failures)
             check(migrated.activeProfile?.name == "默认配置组 1",
                   "legacy profile name migration", into: &failures)
+            check(migrated.profiles.count == 2 && migrated.profiles[1].name == "Codex 编程",
+                  "Codex programming profile seeding", into: &failures)
+            check(MappingStore.codexDefaults[.menu] == .keyboard(35, modifiers: [.command, .shift])
+                  && MappingStore.codexDefaults[.home] == .keyboard(45, modifiers: [.command])
+                  && MappingStore.codexDefaults[.heart] == .keyboard(1, modifiers: [.command]),
+                  "Codex programming shortcuts", into: &failures)
+            check(migrated.selectNextProfile() == "Codex 编程"
+                  && migrated.activeProfile?.name == "Codex 编程",
+                  "reserved key advances to Codex profile", into: &failures)
+            check(migrated.selectNextProfile() == "默认配置组 1"
+                  && migrated.activeProfile?.name == "默认配置组 1",
+                  "reserved key wraps to first profile", into: &failures)
             migrated.addProfile()
             check(migrated.activeProfile?.name == "默认配置组 2",
                   "automatic profile naming", into: &failures)
@@ -135,14 +147,14 @@ enum SelfTest {
             check(migrated.values[.heart] == shortcut,
                   "profile switching preserves bindings", into: &failures)
             let reloaded = MappingStore(defaults: defaults)
-            check(reloaded.profiles.count == 2 && reloaded.values[.heart] == shortcut,
+            check(reloaded.profiles.count == 3 && reloaded.values[.heart] == shortcut,
                   "profile collection persistence", into: &failures)
             if let exported = try? migrated.exportActiveProfileData() {
                 let importSuite = "local.iprc1000.adapter.importtest.\(UUID().uuidString)"
                 if let importDefaults = UserDefaults(suiteName: importSuite) {
                     let destination = MappingStore(defaults: importDefaults)
                     try? destination.importIntoActiveProfile(exported)
-                    check(destination.profiles.count == 1 && destination.values[.heart] == shortcut,
+                    check(destination.profiles.count == 2 && destination.values[.heart] == shortcut,
                           "active profile export and replacement import", into: &failures)
                     check(destination.activeProfile?.name == "默认配置组 1",
                           "import preserves selected profile name", into: &failures)

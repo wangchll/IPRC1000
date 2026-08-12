@@ -52,7 +52,7 @@ enum RemoteKey: UInt8, CaseIterable, Codable, Identifiable {
         case .volumeUp: "音量 +"
         case .mute: "静音"
         case .last: "上一个"
-        case .unknown16: "未标记键 0x16"
+        case .unknown16: "方块键 / 配置切换"
         }
     }
 
@@ -375,6 +375,10 @@ final class MappingStore: ObservableObject {
             if let index = loadedProfiles.firstIndex(where: { $0.name == "默认配置" }) {
                 loadedProfiles[index].name = "默认配置组 1"
             }
+            if !defaults.bool(forKey: "codexProfileSeededV1"),
+               !loadedProfiles.contains(where: { $0.name == "Codex 编程" }) {
+                loadedProfiles.append(Self.codexProfile())
+            }
             let savedID = defaults.string(forKey: "activeMappingProfileID").flatMap(UUID.init(uuidString:))
             let loadedActiveID = loadedProfiles.contains(where: { $0.id == savedID })
                 ? savedID! : loadedProfiles[0].id
@@ -390,7 +394,7 @@ final class MappingStore: ObservableObject {
                 }
             }
             let profile = Profile(id: UUID(), name: "默认配置组 1", values: migrated)
-            profiles = [profile]
+            profiles = [profile, Self.codexProfile()]
             activeProfileID = profile.id
             values = migrated
         } else if let data = defaults.data(forKey: "keyMappings"),
@@ -402,15 +406,16 @@ final class MappingStore: ObservableObject {
                 }
             }
             let profile = Profile(id: UUID(), name: "默认配置组 1", values: migrated)
-            profiles = [profile]
+            profiles = [profile, Self.codexProfile()]
             activeProfileID = profile.id
             values = migrated
         } else {
             let profile = Profile(id: UUID(), name: "默认配置组 1", values: Self.defaults)
-            profiles = [profile]
+            profiles = [profile, Self.codexProfile()]
             activeProfileID = profile.id
             values = Self.defaults
         }
+        defaults.set(true, forKey: "codexProfileSeededV1")
         save()
     }
 
@@ -422,6 +427,15 @@ final class MappingStore: ObservableObject {
     func selectProfile(_ id: UUID) {
         guard profiles.contains(where: { $0.id == id }) else { return }
         activeProfileID = id
+    }
+
+    @discardableResult
+    func selectNextProfile() -> String? {
+        guard profiles.count > 1,
+              let index = profiles.firstIndex(where: { $0.id == activeProfileID }) else { return nil }
+        let profile = profiles[(index + 1) % profiles.count]
+        activeProfileID = profile.id
+        return profile.name
     }
 
     func addProfile() {
@@ -461,7 +475,9 @@ final class MappingStore: ObservableObject {
         values = Self.profile(from: stored).values
     }
 
-    func reset() { values = Self.defaults }
+    func reset() {
+        values = activeProfile?.name == "Codex 编程" ? Self.codexDefaults : Self.defaults
+    }
 
     private func save() {
         if let data = try? JSONEncoder().encode(profiles.map(Self.stored(from:))) {
@@ -495,6 +511,10 @@ final class MappingStore: ObservableObject {
         return Profile(id: stored.id, name: stored.name, values: values)
     }
 
+    private static func codexProfile() -> Profile {
+        Profile(id: UUID(), name: "Codex 编程", values: codexDefaults)
+    }
+
     enum ConfigurationError: LocalizedError {
         case invalidFile
         var errorDescription: String? { "配置文件版本不受支持或不包含任何配置组。" }
@@ -514,5 +534,27 @@ final class MappingStore: ObservableObject {
         .volumeUp: .media(.volumeUp), .volumeDown: .media(.volumeDown),
         .mute: .media(.mute),
         .last: .keyboard(48, modifiers: [.command]), .unknown16: .none
+    ]
+
+    static let codexDefaults: [RemoteKey: KeyBinding] = [
+        .power: .keyboard(12, modifiers: [.control, .command]),
+        .back: .keyboard(53),
+        .menu: .keyboard(35, modifiers: [.command, .shift]),
+        .home: .keyboard(45, modifiers: [.command]),
+        .info: .keyboard(3, modifiers: [.command]),
+        .ok: .keyboard(36),
+        .up: .keyboard(126), .down: .keyboard(125),
+        .left: .keyboard(123), .right: .keyboard(124),
+        .heart: .keyboard(1, modifiers: [.command]),
+        .person: .keyboard(43, modifiers: [.command]),
+        .microphone: .none,
+        .playPause: .keyboard(49),
+        .fastForward: .keyboard(48),
+        .rewind: .keyboard(48, modifiers: [.shift]),
+        .channelUp: .keyboard(116), .channelDown: .keyboard(121),
+        .volumeUp: .media(.volumeUp), .volumeDown: .media(.volumeDown),
+        .mute: .media(.mute),
+        .last: .keyboard(17, modifiers: [.command, .shift]),
+        .unknown16: .none
     ]
 }

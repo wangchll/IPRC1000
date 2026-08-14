@@ -77,6 +77,18 @@ Developer ID Application 签名身份。打包脚本会替换现有的
 scripts/build-libsbc.sh
 ```
 
+Intel Mac 使用独立的 x86_64 编译和打包流程，不会替换 Apple Silicon 的构建产物：
+
+```sh
+scripts/build-libsbc-intel.sh
+scripts/package-app-intel.sh
+open "dist/IPRC1000 Adapter Intel.app"
+```
+
+Intel 产物要求 macOS 14 或更高版本。发布 DMG 时请在文件名中保留 `Intel` 标记，
+例如 `IPRC1000-Adapter-0.2.2-Intel-GitHub-AdHoc.dmg`。Intel 版使用独立的
+`Vendor/lib-intel` 和 `.build/x86_64-apple-macosx` 构建目录。
+
 ## 首次使用
 
 1. 在 macOS 蓝牙设置中配对并连接 `IPRC1000` 遥控器。

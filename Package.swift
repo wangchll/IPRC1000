@@ -1,5 +1,8 @@
 // swift-tools-version: 6.0
 import PackageDescription
+import Foundation
+
+let sbcLibraryPath = ProcessInfo.processInfo.environment["IPRC1000_SBC_LIBRARY_PATH"] ?? "Vendor/lib"
 
 let package = Package(
     name: "IPRC1000Adapter",
@@ -11,7 +14,7 @@ let package = Package(
         .target(
             name: "CRemoteSupport",
             linkerSettings: [
-                .unsafeFlags(["-LVendor/lib"]),
+                .unsafeFlags(["-L\(sbcLibraryPath)"]),
                 .linkedLibrary("sbc")
             ]
         ),

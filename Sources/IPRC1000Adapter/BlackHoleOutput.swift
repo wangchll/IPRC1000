@@ -24,6 +24,12 @@ final class FloatRingBuffer: @unchecked Sendable {
 
     init(capacity: Int) { storage = [Float](repeating: 0, count: capacity) }
 
+    var pendingCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return available
+    }
+
     func write(_ values: [Float]) {
         lock.lock()
         defer { lock.unlock() }
@@ -38,19 +44,72 @@ final class FloatRingBuffer: @unchecked Sendable {
         }
     }
 
-    func read() -> Float {
+    func reset() {
         lock.lock()
         defer { lock.unlock() }
-        guard available > 0 else { return 0 }
-        let value = storage[readIndex]
-        readIndex = (readIndex + 1) % storage.count
-        available -= 1
-        return value
+        readIndex = 0
+        writeIndex = 0
+        available = 0
+    }
+
+    /// Render never waits for the producer and allocates no scratch storage.
+    func render(_ outputData: UnsafeMutablePointer<AudioBufferList>) {
+        let buffers = UnsafeMutableAudioBufferListPointer(outputData)
+        for buffer in buffers {
+            if let data = buffer.mData { memset(data, 0, Int(buffer.mDataByteSize)) }
+        }
+        guard lock.try() else { return }
+        defer { lock.unlock() }
+        let frames = buffers.reduce(Int.max) { min($0, Int($1.mDataByteSize) / (4 * max(1, Int($1.mNumberChannels)))) }
+        guard !buffers.isEmpty else { return }
+        for frame in 0..<frames {
+            let value: Float
+            if available > 0 {
+                value = storage[readIndex]
+                readIndex = (readIndex + 1) % storage.count
+                available -= 1
+            } else { value = 0 }
+            for buffer in buffers {
+                guard let data = buffer.mData else { continue }
+                let channels = Int(buffer.mNumberChannels)
+                let pointer = data.assumingMemoryBound(to: Float.self)
+                for channel in 0..<channels { pointer[frame * channels + channel] = value }
+            }
+        }
+    }
+}
+
+/// Linear interpolation retains its fractional position and last sample across reports.
+struct VoiceResampler {
+    private var last: Float?
+    private var inputCount = 0
+    private var outputCount = 0
+
+    mutating func reset() { self = Self() }
+
+    mutating func process(_ samples: [Int16], sampleRate: Double) -> [Float] {
+        guard !samples.isEmpty, sampleRate > 0 else { return [] }
+        var input = samples.map { Float($0) / 32768 }
+        let startIndex = inputCount - (last == nil ? 0 : 1)
+        if let last { input.insert(last, at: 0) }
+        inputCount += samples.count
+        var output: [Float] = []
+        output.reserveCapacity(Int(Double(samples.count) * sampleRate / 16000) + 1)
+        while Double(outputCount) * 16000 < Double(inputCount - 1) * sampleRate {
+            let position = (Double(outputCount) * 16000 - Double(startIndex) * sampleRate) / sampleRate
+            let low = Int(position)
+            let fraction = Float(position - Double(low))
+            output.append(input[low] + (input[low + 1] - input[low]) * fraction)
+            outputCount += 1
+        }
+        last = input.last
+        return output
     }
 }
 
 final class BlackHoleOutput: @unchecked Sendable {
-    private let ring = FloatRingBuffer(capacity: 48000 * 5)
+    private var ring = FloatRingBuffer(capacity: 9600)
+    private var resampler = VoiceResampler()
     private var device: AudioDeviceID = 0
     private var ioProcID: AudioDeviceIOProcID?
     private(set) var sampleRate = 48000.0
@@ -62,7 +121,13 @@ final class BlackHoleOutput: @unchecked Sendable {
             return (false, "未找到 BlackHole 2ch")
         }
         device = found
-        sampleRate = Self.nominalSampleRate(of: found) ?? 48000
+        guard let rate = Self.nominalSampleRate(of: found), rate.isFinite,
+              rate >= 16000, rate <= 192000, Self.hasFloatOutput(found) else {
+            return (false, "BlackHole 输出需为 16–192 kHz、32-bit Float PCM")
+        }
+        sampleRate = rate
+        ring = FloatRingBuffer(capacity: Int(rate * 0.7))
+        resampler.reset()
         var proc: AudioDeviceIOProcID?
         let created = AudioDeviceCreateIOProcID(
             found, blackHoleIOProc, Unmanaged.passUnretained(self).toOpaque(), &proc
@@ -87,42 +152,40 @@ final class BlackHoleOutput: @unchecked Sendable {
         self.ioProcID = nil
     }
 
-    func enqueue16kMono(_ samples: [Int16]) {
-        guard samples.count > 1 else { return }
-        let ratio = sampleRate / 16000.0
-        let outputCount = Int(Double(samples.count) * ratio)
-        var resampled = [Float]()
-        resampled.reserveCapacity(outputCount)
-        for index in 0..<outputCount {
-            let position = Double(index) / ratio
-            let low = min(Int(position), samples.count - 1)
-            let high = min(low + 1, samples.count - 1)
-            let fraction = Float(position - Double(low))
-            let a = Float(samples[low]) / Float(Int16.max)
-            let b = Float(samples[high]) / Float(Int16.max)
-            resampled.append(a + (b - a) * fraction)
-        }
-        ring.write(resampled)
+    func resetAudio() {
+        ring.reset()
+        resampler.reset()
     }
+
+    func enqueue16kMono(_ samples: [Int16]) {
+        ring.write(resampler.process(samples, sampleRate: sampleRate))
+    }
+
+    var queuedDuration: TimeInterval { Double(ring.pendingCount) / sampleRate }
 
     fileprivate func render(_ outputData: UnsafeMutablePointer<AudioBufferList>) {
-        let buffers = UnsafeMutableAudioBufferListPointer(outputData)
-        guard !buffers.isEmpty else { return }
-        let frames = Int(buffers[0].mDataByteSize) / MemoryLayout<Float>.size
-            / max(Int(buffers[0].mNumberChannels), 1)
-        var mono = [Float](repeating: 0, count: frames)
-        for index in mono.indices { mono[index] = ring.read() }
-        for bufferIndex in buffers.indices {
-            guard let data = buffers[bufferIndex].mData else { continue }
-            let channels = max(Int(buffers[bufferIndex].mNumberChannels), 1)
-            let pointer = data.bindMemory(to: Float.self, capacity: frames * channels)
-            for frame in 0..<frames {
-                for channel in 0..<channels { pointer[frame * channels + channel] = mono[frame] }
-            }
-        }
+        ring.render(outputData)
     }
 
-    private static func findDevice(named name: String) -> AudioDeviceID? {
+    private static func hasFloatOutput(_ device: AudioDeviceID) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyStreamFormat,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var format = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &format) == noErr else { return false }
+        let channels = format.mFormatFlags & kAudioFormatFlagIsNonInterleaved != 0
+            ? 1 : format.mChannelsPerFrame
+        return format.mFormatID == kAudioFormatLinearPCM
+            && format.mFormatFlags & kAudioFormatFlagIsFloat != 0
+            && format.mFormatFlags & kAudioFormatFlagIsBigEndian == 0
+            && format.mBitsPerChannel == 32 && format.mChannelsPerFrame > 0
+            && format.mBytesPerFrame == 4 * channels
+    }
+
+    static func findDevice(named name: String) -> AudioDeviceID? {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
             mScope: kAudioObjectPropertyScopeGlobal,

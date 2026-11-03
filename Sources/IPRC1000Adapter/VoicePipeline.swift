@@ -1,7 +1,5 @@
 import CRemoteSupport
-import CoreBluetooth
 import Foundation
-import os
 
 enum VoicePacketAssembler {
     private static let sequences: Set<UInt8> = [0x08, 0x38, 0xC8, 0xF8]
@@ -102,299 +100,155 @@ enum GoogleVoiceADPCM {
     }
 }
 
-final class VoiceController: NSObject, @unchecked Sendable {
-    private static let logger = Logger(subsystem: "local.iprc1000.adapter", category: "BluetoothVoice")
-    private static var hidService: CBUUID { CBUUID(string: "1812") }
-    private static var atvService: CBUUID { CBUUID(string: "AB5E0001-5A21-4F05-BC7D-AF01F617B664") }
-    private static var atvTX: CBUUID { CBUUID(string: "AB5E0002-5A21-4F05-BC7D-AF01F617B664") }
-    private static var atvRX: CBUUID { CBUUID(string: "AB5E0003-5A21-4F05-BC7D-AF01F617B664") }
-    private static var atvControl: CBUUID { CBUUID(string: "AB5E0004-5A21-4F05-BC7D-AF01F617B664") }
+/// Observed Classic HID F7 format. IOHID may include or omit the report ID.
+struct ClassicVoiceFrame {
+    let sequence: UInt16
+    let deviceTime: UInt16
+    let bufferState: UInt16
+    let reserved: UInt16
+    let samples: [Int16]
+
+    static func parse(_ bytes: [UInt8], reportID: Int) -> ClassicVoiceFrame? {
+        guard reportID == 0xF7 else { return nil }
+        let offset: Int
+        if bytes.count == 652, bytes.first == 0xF7 { offset = 1 }
+        else if bytes.count == 651 { offset = 0 }
+        else { return nil }
+        func word(_ index: Int) -> UInt16 {
+            UInt16(bytes[offset + index]) | UInt16(bytes[offset + index + 1]) << 8
+        }
+        guard bytes[offset] == 1, word(9) == 320 else { return nil }
+        return ClassicVoiceFrame(
+            sequence: word(1), deviceTime: word(3), bufferState: word(5), reserved: word(7),
+            samples: stride(from: 11, to: 651, by: 2).map { Int16(bitPattern: word($0)) }
+        )
+    }
+}
+
+struct ClassicVoiceStream {
+    private var previous: UInt16?
+    private var lastArrival: TimeInterval?
+    private(set) var missing = 0
+    private(set) var discarded = 0
+    private(set) var resynchronized = 0
+
+    mutating func reset() { self = Self() }
+
+    // A new press can restart at zero. Large gaps resynchronize instead of building latency.
+    mutating func append(_ frame: ClassicVoiceFrame, at now: TimeInterval)
+        -> (samples: [Int16], restarted: Bool)? {
+        var restarted = previous == nil || now - (lastArrival ?? now) > 0.5
+        var silence = 0
+        if let previous, !restarted {
+            let delta = frame.sequence &- previous
+            if delta == 0 { discarded += 1; return nil }
+            if frame.sequence == 0, delta != 1 {
+                restarted = true
+            } else if delta >= 0x8000 {
+                discarded += 1
+                return nil
+            } else if delta > 1 {
+                missing += Int(delta) - 1
+                if delta <= 4 { silence = (Int(delta) - 1) * 320 }
+                else { restarted = true; resynchronized += 1 }
+            }
+        }
+        previous = frame.sequence
+        lastArrival = now
+        return ([Int16](repeating: 0, count: silence) + frame.samples, restarted)
+    }
+}
+
+/// Classic audio is passive: no BLE scanning, SDP discovery, or private START/STOP writes.
+final class VoiceController: @unchecked Sendable {
     var onStatus: @Sendable (String, Bool) -> Void = { _, _ in }
     var onLevel: @Sendable (Float) -> Void = { _ in }
-
-    private var central: CBCentralManager!
-    private var peripheral: CBPeripheral?
-    private var reportReferences: [ObjectIdentifier: CBCharacteristic] = [:]
-    private var audioCharacteristic: CBCharacteristic?
-    private var controlInputCharacteristic: CBCharacteristic?
-    private var controlFeatureCharacteristic: CBCharacteristic?
-    private var atvTXCharacteristic: CBCharacteristic?
-    private var atvRXCharacteristic: CBCharacteristic?
-    private var atvControlCharacteristic: CBCharacteristic?
-    private var sentATVCapabilities = false
-    private var assembler = VoicePacketAssembler.State()
-    private let decoder = MSBCDecoder()
+    var onSamples: @Sendable ([Int16]) -> Void = { _ in }
+    var onUtteranceEnd: @Sendable () -> Void = { }
+    var directBlackHoleOutput = true
     private let output = BlackHoleOutput()
-    private let classicProbe = ClassicBluetoothProbe()
-    private var voicePackets = 0
+    private var stream = ClassicVoiceStream()
+    private var outputReady = false
+    private var outputMessage = ""
+    private var lastArrival: TimeInterval?
+    private var timer: Timer?
+    private var packets = 0
+    private var externalAudio = false
+    private var startupSamples: [Int16] = []
+    private var startupTimer: Timer?
 
-    override init() {
-        super.init()
-        classicProbe.onTargetStatus = { [weak self] message in
-            self?.onStatus(message, false)
+    func prepareExternalAudio() {
+        directBlackHoleOutput = true
+        startupTimer?.invalidate()
+        externalAudio = true
+        startupSamples.removeAll(keepingCapacity: true)
+        output.resetAudio()
+        startupTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.output.enqueue16kMono(self.startupSamples)
+            self.startupSamples.removeAll(keepingCapacity: true)
+            self.startupTimer = nil
         }
-        central = CBCentralManager(delegate: self, queue: .main)
     }
+
+    func cancelExternalAudio() {
+        startupTimer?.invalidate()
+        startupTimer = nil
+        startupSamples.removeAll(keepingCapacity: true)
+        externalAudio = false
+    }
+
+    deinit { timer?.invalidate() }
 
     func start() {
-        let audioStatus = output.start()
-        if !audioStatus.ok {
-            onStatus(audioStatus.message, false)
-        } else {
-            onStatus("BlackHole 2ch 已就绪，正在连接遥控器…", false)
+        let status = output.start()
+        outputReady = status.ok
+        outputMessage = status.message
+        onStatus(status.ok ? "等待 Classic HID F7 语音报告；按住麦克风键说话" : status.message, false)
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self, let last = self.lastArrival,
+                  ProcessInfo.processInfo.systemUptime - last > 0.5 else { return }
+            if self.externalAudio && (self.startupTimer != nil || self.output.queuedDuration > 0) { return }
+            self.lastArrival = nil
+            self.stream.reset()
+            self.output.resetAudio()
+            self.onUtteranceEnd()
+            self.onLevel(0)
+            self.onStatus("语音已停止；等待下一次 F7（已收 \(self.packets) 帧）", false)
         }
-        if central.state == .poweredOn { findRemote() }
-        classicProbe.start()
     }
 
-    private func findRemote() {
-        let connectedPeripherals = central.retrieveConnectedPeripherals(
-            withServices: [Self.atvService, Self.hidService]
-        )
-        let connectedNames = connectedPeripherals.map { $0.name ?? "<nil>" }.joined(separator: ",")
-        Self.logger.notice(
-            "connected HID peripherals=\(connectedPeripherals.count, privacy: .public) names=\(connectedNames, privacy: .public)"
-        )
-        if let connected = connectedPeripherals.first(where: { $0.name == "IPRC1000" }) {
-            connect(connected)
+    func connectionChanged(_ ready: Bool) {
+        stream.reset()
+        lastArrival = nil
+        output.resetAudio()
+        onLevel(0)
+        onStatus(ready ? "Classic HID 监听已就绪，等待 F7 语音报告" : "等待唯一配对遥控器的 Classic HID 连接", false)
+    }
+
+    func receive(_ report: [UInt8], reportID: Int) {
+        guard let frame = ClassicVoiceFrame.parse(report, reportID: reportID) else {
+            onStatus("收到 F7，但格式或长度不符（\(report.count) 字节）", false)
             return
         }
-        central.scanForPeripherals(
-            // This firmware does not include its service UUIDs in pairing advertisements.
-            // Discovery remains isolated by the exact IPRC1000 name before connecting.
-            withServices: nil,
-            options: nil
-        )
-        onStatus("正在查找 IPRC1000 的 BLE 语音服务…", false)
-    }
-
-    private func connect(_ remote: CBPeripheral) {
-        guard peripheral == nil else { return }
-        central.stopScan()
-        peripheral = remote
-        remote.delegate = self
-        central.connect(remote)
-        onStatus("正在连接 IPRC1000 语音通道…", false)
-    }
-
-    private func resetCharacteristics() {
-        reportReferences.removeAll()
-        audioCharacteristic = nil
-        controlInputCharacteristic = nil
-        controlFeatureCharacteristic = nil
-        atvTXCharacteristic = nil
-        atvRXCharacteristic = nil
-        atvControlCharacteristic = nil
-        sentATVCapabilities = false
-        assembler = .init()
-    }
-
-    private func sendControl(_ bytes: [UInt8]) {
-        guard let peripheral, let characteristic = controlFeatureCharacteristic else {
-            onStatus("遥控器未暴露语音控制写入报告（F8 Feature）", false)
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let chunk = stream.append(frame, at: now) else { return }
+        lastArrival = now
+        packets += 1
+        onSamples(chunk.samples)
+        guard outputReady else {
+            onStatus("已收到 Classic F7；\(outputMessage)", false)
             return
         }
-        peripheral.writeValue(Data(bytes), for: characteristic, type: .withResponse)
-    }
-
-    private func sendATV(_ bytes: [UInt8]) {
-        guard let peripheral, let characteristic = atvTXCharacteristic else { return }
-        let type: CBCharacteristicWriteType = characteristic.properties.contains(.write)
-            ? .withResponse : .withoutResponse
-        peripheral.writeValue(Data(bytes), for: characteristic, type: type)
-    }
-
-    private func finishATVSetupIfReady() {
-        guard !sentATVCapabilities, peripheral != nil,
-              let rx = atvRXCharacteristic, let control = atvControlCharacteristic,
-              rx.isNotifying, control.isNotifying else { return }
-        sentATVCapabilities = true
-        // Android TV Voice 1.0, host supports ADPCM at 8 kHz and 16 kHz.
-        sendATV([0x0A, 0x01, 0x00, 0x00, 0x03])
-        Self.logger.notice("Android TV Voice notifications enabled; sent capabilities request")
-        onStatus("语音通道就绪；按住遥控器麦克风键说话", true)
-    }
-}
-
-extension VoiceController: CBCentralManagerDelegate {
-    func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        Self.logger.notice("central state=\(central.state.rawValue, privacy: .public)")
-        switch central.state {
-        case .poweredOn: findRemote()
-        case .unauthorized: onStatus("请在“隐私与安全性 → 蓝牙”中允许本 App", false)
-        case .poweredOff: onStatus("蓝牙已关闭", false)
-        case .unsupported: onStatus("当前运行环境未向 App 提供蓝牙控制器", false)
-        default: onStatus("正在等待蓝牙可用…", false)
+        if directBlackHoleOutput {
+            if chunk.restarted { output.resetAudio() }
+            if startupTimer != nil { startupSamples.append(contentsOf: chunk.samples) }
+            else { output.enqueue16kMono(chunk.samples) }
         }
-    }
-
-    func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
-                        advertisementData: [String: Any], rssi RSSI: NSNumber) {
-        if peripheral.name == "IPRC1000" {
-            Self.logger.notice("discovered BLE target name=IPRC1000")
-            connect(peripheral)
-        }
-    }
-
-    func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        Self.logger.notice(
-            "connected name=\(peripheral.name ?? "<nil>", privacy: .public) id=\(peripheral.identifier.uuidString, privacy: .public)"
-        )
-        resetCharacteristics()
-        peripheral.discoverServices(nil)
-        onStatus("已连接，正在读取 HID 语音报告…", false)
-    }
-
-    func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral,
-                        error: Error?) {
-        self.peripheral = nil
-        onStatus("语音通道连接失败：\(error?.localizedDescription ?? "未知错误")", false)
-        findRemote()
-    }
-
-    func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral,
-                        timestamp: CFAbsoluteTime, isReconnecting: Bool, error: Error?) {
-        self.peripheral = nil
-        resetCharacteristics()
-        onStatus("IPRC1000 语音通道已断开", false)
-        findRemote()
-    }
-}
-
-extension VoiceController: CBPeripheralDelegate {
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        guard error == nil else {
-            onStatus("读取 BLE 服务失败：\(error!.localizedDescription)", false)
-            return
-        }
-        let services = peripheral.services?.map { $0.uuid.uuidString }.joined(separator: ",") ?? "<none>"
-        Self.logger.notice("services=\(services, privacy: .public)")
-        if let atv = peripheral.services?.first(where: { $0.uuid == Self.atvService }) {
-            peripheral.discoverCharacteristics(
-                [Self.atvTX, Self.atvRX, Self.atvControl], for: atv
-            )
-        } else if let hid = peripheral.services?.first(where: { $0.uuid == Self.hidService }) {
-            peripheral.discoverCharacteristics([CBUUID(string: "2A4D")], for: hid)
-        } else {
-            onStatus("遥控器未暴露 Android TV Voice 或 HID 语音服务", false)
-        }
-    }
-
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService,
-                    error: Error?) {
-        let discovered = service.characteristics?.map {
-            "\($0.uuid.uuidString):\($0.properties.rawValue)"
-        }.joined(separator: ",") ?? "<none>"
-        Self.logger.notice(
-            "characteristics service=\(service.uuid.uuidString, privacy: .public) values=\(discovered, privacy: .public)"
-        )
-        guard error == nil, let characteristics = service.characteristics,
-              !characteristics.isEmpty else {
-            onStatus("语音服务中没有可用特征", false)
-            return
-        }
-        if service.uuid == Self.atvService {
-            atvTXCharacteristic = characteristics.first { $0.uuid == Self.atvTX }
-            atvRXCharacteristic = characteristics.first { $0.uuid == Self.atvRX }
-            atvControlCharacteristic = characteristics.first { $0.uuid == Self.atvControl }
-            guard atvTXCharacteristic != nil,
-                  let rx = atvRXCharacteristic, let control = atvControlCharacteristic else {
-                onStatus("Android TV Voice 服务特征不完整", false)
-                return
-            }
-            peripheral.setNotifyValue(true, for: rx)
-            peripheral.setNotifyValue(true, for: control)
-            return
-        }
-        for characteristic in characteristics {
-            peripheral.discoverDescriptors(for: characteristic)
-        }
-    }
-
-    func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic,
-                    error: Error?) {
-        guard error == nil else {
-            onStatus("启用语音通知失败：\(error!.localizedDescription)", false)
-            return
-        }
-        finishATVSetupIfReady()
-    }
-
-    func peripheral(_ peripheral: CBPeripheral, didDiscoverDescriptorsFor characteristic: CBCharacteristic,
-                    error: Error?) {
-        guard error == nil else { return }
-        for descriptor in characteristic.descriptors ?? [] where descriptor.uuid == CBUUID(string: "2908") {
-            reportReferences[ObjectIdentifier(descriptor)] = characteristic
-            peripheral.readValue(for: descriptor)
-        }
-    }
-
-    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor descriptor: CBDescriptor,
-                    error: Error?) {
-        guard error == nil,
-              let characteristic = reportReferences.removeValue(forKey: ObjectIdentifier(descriptor)),
-              let data = descriptor.value as? Data, data.count >= 2 else { return }
-        let reportID = data[data.startIndex]
-        let reportType = data[data.index(after: data.startIndex)]
-        switch (reportID, reportType) {
-        case (0xF7, 1):
-            audioCharacteristic = characteristic
-            peripheral.setNotifyValue(true, for: characteristic)
-        case (0xF8, 1):
-            controlInputCharacteristic = characteristic
-            peripheral.setNotifyValue(true, for: characteristic)
-        case (0xF8, 3):
-            controlFeatureCharacteristic = characteristic
-        default: break
-        }
-        if audioCharacteristic != nil && controlInputCharacteristic != nil
-            && controlFeatureCharacteristic != nil {
-            onStatus("语音通道就绪；按住遥控器麦克风键说话", true)
-        }
-    }
-
-    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic,
-                    error: Error?) {
-        guard error == nil, let value = characteristic.value else { return }
-        let bytes = [UInt8](value)
-        if characteristic === atvControlCharacteristic {
-            guard let command = bytes.first else { return }
-            Self.logger.notice("Android TV Voice control=\(command, format: .hex)")
-            if command == 0x08 {
-                sendATV([0x0C, 0x00, 0x02])
-                onStatus("正在传送遥控器麦克风到 BlackHole 2ch", true)
-            } else if command == 0x00 {
-                onLevel(0)
-                onStatus("语音通道就绪；按住麦克风键说话", true)
-            }
-        } else if characteristic === atvRXCharacteristic {
-            voicePackets += 1
-            if let pcm = GoogleVoiceADPCM.decode(bytes) {
-                output.enqueue16kMono(pcm)
-                let peak = pcm.reduce(Int16(0)) { max($0, Int16(clamping: abs(Int($1)))) }
-                onLevel(Float(peak) / Float(Int16.max))
-            } else {
-                Self.logger.error("invalid Android TV Voice audio packet length=\(bytes.count)")
-            }
-        } else if characteristic === controlInputCharacteristic {
-            let payload = bytes.first == 0xF8 ? Array(bytes.dropFirst()) : bytes
-            guard let command = payload.first else { return }
-            if command == 0x0C {
-                assembler = .init()
-                sendControl([0x02, 0, 1, 0, 0, 0, 0])
-                onStatus("正在传送遥控器麦克风到 BlackHole 2ch", true)
-            } else if command == 0x0D {
-                sendControl([0x03, 0, 1, 0, 0, 0, 0])
-                onStatus("语音通道就绪；按住麦克风键说话", true)
-            }
-        } else if characteristic === audioCharacteristic {
-            voicePackets += 1
-            if let frame = VoicePacketAssembler.append(bytes, to: &assembler),
-               let pcm = decoder?.decode(frame) {
-                output.enqueue16kMono(pcm)
-                let peak = pcm.reduce(Int16(0)) { max($0, Int16(clamping: abs(Int($1)))) }
-                onLevel(Float(peak) / Float(Int16.max))
-            }
+        let peak = frame.samples.reduce(0) { max($0, abs(Int($1))) }
+        onLevel(Float(peak) / 32768)
+        if packets == 1 || chunk.restarted || packets % 50 == 0 {
+            onStatus("F7 → BlackHole 2ch · \(packets) 帧 · 缺序号 \(stream.missing) · 丢弃 \(stream.discarded) · 重同步 \(stream.resynchronized)", true)
         }
     }
 }

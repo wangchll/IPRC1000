@@ -99,7 +99,7 @@ final class ClassicBluetoothProbe: NSObject, IOBluetoothDeviceAsyncCallbacks,
         if hasPublishedVoiceChannel {
             onTargetStatus("经典蓝牙 SDP 已读取：发现 \(records.count) 条服务")
         } else {
-            onTargetStatus("当前遥控器固件仅公开键盘 HID，未提供麦克风数据通道")
+            onTargetStatus("SDP 仅列出 HID；已确认的 F7 语音复用 HID Interrupt，实时接收需另行验证")
         }
         return true
     }

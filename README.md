@@ -6,14 +6,16 @@ IPRC1000 Adapter 是一款常驻 macOS 菜单栏的遥控器适配工具，面�
 `IPRC1000`、VID/PID 为 `0A5C:8502` 的 Broadcom/Cypress 蓝牙遥控器。它可以拦截
 遥控器原始键值，将每个按键重新映射为 Mac 单键、组合键或媒体键。
 
-> 当前项目只匹配 `IPRC1000 + 0A5C:8502`。应用会监听全局键盘事件以过滤遥控器的
-> 原始键值，但只有与目标遥控器 HID 报告的键码和时间戳匹配时才会拦截；其他输入设备
-> 的普通事件会直接放行。
+> 当前语音路径：**目标遥控器 IOHID 独占按键 + Apple PacketLogger 临时 HCI 音频接收**。
+> 不注册全局键盘事件钩子，不对其他键盘做候选按键延迟。PacketLogger 的底层流包含本机
+> 其他蓝牙流量；临时管理员进程只解析目标 F7，向前台交付目标音频与独占读取的按键，
+> 不保存原始抓包。开始捕获需要管理员认证，不安装常驻服务。
 
 ## 下载与安装
 
 从 [GitHub Releases](https://github.com/wangchll/IPRC1000/releases/latest) 下载
-`IPRC1000-Adapter-0.2.2-GitHub-AdHoc.dmg`：
+`IPRC1000-Adapter-0.2.2-GitHub-AdHoc.dmg`。该历史 Release **不包含本文新增的语音适配**；
+最新语音功能目前从源码构建，不能把仓库更新视为已发布新 DMG。历史包安装步骤：
 
 1. 打开 DMG，把 `IPRC1000 Adapter.app` 拖入“应用程序”。
 2. 首次启动时，如果 macOS 提示无法验证开发者，先尝试打开一次应用，然后进入
@@ -26,18 +28,20 @@ IPRC1000 Adapter 是一款常驻 macOS 菜单栏的遥控器适配工具，面�
 
 ## 功能
 
-- 精确匹配产品名、Vendor ID 和 Product ID，不保存遥控器 MAC、序列号或蓝牙 UUID。
+- 通过产品名、VID/PID、Bluetooth 传输及唯一已配对地址匹配目标设备；地址只在运行期使用。
 - 将遥控器按键映射为任意 Mac 键盘单键、最多五种修饰键组合或系统媒体键。
 - 支持只发送 `Control`、`Option`、`Shift`、`Command`、`Fn` 等修饰键。
 - 过滤遥控器松键时错误产生的 `0x0C`（字母 `i`）报告。
-- 提供连接状态、最近按键和按键通道诊断。
+- 提供连接状态、最近按键、目标按键/F7 计数和语音电平。
+- 支持 macOS 本机中文识别后写入光标，或把实时音频送入微信语音输入法。
 
 ## 系统要求
 
 - macOS 14 或更高版本。
 - 一只产品名为 `IPRC1000`、VID/PID 为 `0A5C:8502` 的遥控器。
 - 从源码构建需要 Apple Command Line Tools、Swift 6，以及项目当前固定使用的
-  `MacOSX15.4.sdk`。
+  `MacOSX15.4.sdk`；若本机没有此 SDK，可明确设置 `IPRC1000_SDK_PATH` 使用与编译器匹配的已安装 SDK。
+- 微信模式还需要 BlackHole 2ch、微信输入法及 Apple PacketLogger；详见下文。
 
 ## 构建与运行
 
@@ -47,29 +51,31 @@ IPRC1000 Adapter 是一款常驻 macOS 菜单栏的遥控器适配工具，面�
 git clone https://github.com/wangchll/IPRC1000.git
 cd IPRC1000
 
-SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk \
-CLANG_MODULE_CACHE_PATH=/private/tmp/iprc1000-module-cache \
-SWIFT_MODULECACHE_PATH=/private/tmp/iprc1000-module-cache \
-  swift build --disable-sandbox -c release \
-    --sdk /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
+export SDKROOT="${IPRC1000_SDK_PATH:-/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk}"
+export CLANG_MODULE_CACHE_PATH=/private/tmp/iprc1000-module-cache
+export SWIFT_MODULECACHE_PATH=/private/tmp/iprc1000-module-cache
+swift build --disable-sandbox -c release --sdk "$SDKROOT"
 ```
 
 运行开发构建：
 
 ```sh
-.build/arm64-apple-macosx/release/IPRC1000Adapter
+"$(swift build --disable-sandbox -c release --sdk "$SDKROOT" --show-bin-path)/IPRC1000Adapter"
 ```
 
-生成 `.app`：
+生成两个不同名称的 `.app`（不会替换本机 `/Applications` 中的应用）：
 
 ```sh
-scripts/package-app.sh
-open "dist/IPRC1000 Adapter.app"
+# 使用当前已安装且与 Swift 编译器匹配的 SDK；未设置时脚本沿用项目默认 15.4。
+export IPRC1000_SDK_PATH=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+IPRC1000_PACKAGE_VARIANT=GitHub-AdHoc IPRC1000_CODE_SIGN_IDENTITY=- scripts/package-app.sh
+IPRC1000_PACKAGE_VARIANT=Local IPRC1000_CODE_SIGN_IDENTITY="你的本机签名身份" scripts/package-app.sh
 ```
 
-打包脚本默认使用 ad-hoc 签名。正式分发时，可将 `IPRC1000_CODE_SIGN_IDENTITY` 设置为
-Developer ID Application 签名身份。打包脚本会替换现有的
-`dist/IPRC1000 Adapter.app`。
+产物分别为 `dist/IPRC1000 Adapter GitHub-AdHoc.app` 和 `dist/IPRC1000 Adapter Local.app`；
+脚本逐个执行严格签名校验。未设置 `IPRC1000_PACKAGE_VARIANT` 时，保留原有
+`dist/IPRC1000 Adapter.app` 输出位置，并覆盖该位置。`--show-bin-path` 用于获取实际
+SwiftPM 输出目录，兼容不同版本的构建后端。
 
 如果需要从源码重建 libsbc，再运行：
 
@@ -82,12 +88,14 @@ Intel Mac 使用独立的 x86_64 编译和打包流程，不会替换 Apple Sili
 ```sh
 scripts/build-libsbc-intel.sh
 scripts/package-app-intel.sh
-open "dist/IPRC1000 Adapter Intel.app"
+# 同样可以设置 IPRC1000_PACKAGE_VARIANT=Local 或 GitHub-AdHoc
 ```
 
 Intel 产物要求 macOS 14 或更高版本。发布 DMG 时请在文件名中保留 `Intel` 标记，
 例如 `IPRC1000-Adapter-0.2.2-Intel-GitHub-AdHoc.dmg`。Intel 版使用独立的
-`Vendor/lib-intel` 和 `.build/x86_64-apple-macosx` 构建目录。
+`Vendor/lib-intel`；二进制位置通过指定 triple 后的 `--show-bin-path` 获取。
+较新的 SwiftPM/Xcode 后端可能复用 `.build/out` 中间目录，因此构建两种架构应顺序执行，
+分发产物保持不同名称，不并行覆盖。
 
 ## 首次使用
 
@@ -98,6 +106,44 @@ Intel 产物要求 macOS 14 或更高版本。发布 DMG 时请在文件名中�
    - 辅助功能：发送重新映射后的键盘和媒体键事件。
 4. 返回应用总览，确认“设备连接”显示在线，然后按遥控器按键检查“当前操作”。
 5. 如果修改权限后状态没有刷新，退出并重新启动应用。
+
+## 遥控器语音与光标输入
+
+1. 安装 `BlackHole 2ch`，从 Apple 的 Additional Tools for Xcode 安装 `PacketLogger.app`
+   到 `/Applications`；蓝牙日志描述文件需要对当前系统有效。程序会验证 PacketLogger 的 Apple 签名，
+   不会自动下载工具、安装描述文件或更改系统蓝牙日志配置。
+2. 在“连接诊断”点击“启动临时蓝牙语音”，完成系统管理员认证。
+   “输入监控”与“辅助功能”仍是独立权限；管理员身份不能替代输入监控授权。
+3. 选择识别方式并点击“启用光标处语音输入”：
+   - **macOS 本机识别**：`SFSpeechRecognizer(zh-CN)`，强制 `requiresOnDeviceRecognition`。
+     中文模型不可用时提示错误，不退回云端；完成识别后在本次说话开始时捕获的输入框粘贴。
+   - **外部语音输入法（微信等）**：已验证的是微信的 **Fn 长按模式**。在微信输入法中开启
+     Fn 语音快捷键、把麦克风选为“自动检测”。按住遥控器时临时选择微信输入源和 BlackHole，
+     流式转发 PCM，排空后释放 Fn 并恢复原麦克风与输入源。识别与文字落点由微信输入法负责，
+     是否联网由该输入法决定。其他快捷键/输入法只提供配置入口，未做端到端验收。
+4. **点击目标应用的普通文本输入框**，直接按住遥控器麦克风说话，松开结束。
+   文字应进入光标处，不需要停留在适配器窗口。普通按键继续按当前配置转发。
+5. 停用输入结束转写/微信会话；“停止语音”同时结束临时捕获、释放独占设备。
+   正常退出应用也会清理临时捕获，不安装系统服务。
+
+底层音频是 `Classic HID Interrupt → F7 → Int16LE PCM`，不是 mSBC、ADPCM 或 Mac 麦克风录音。
+当前 IOHID 实测只交付键盘 Report ID 1，不交付隐藏 F7，所以音频使用获授权的临时 HCI 路径。
+独占键盘管理器在重连前已打开，并仅匹配目标实物；接管时读取该目标缓存的麦克风状态，
+补交已发生的冷唤醒按下，避免必须再次按键。HID rollover 错误不会当成松开。
+
+2026-11-03 本机 `.33` 已通过冷唤醒一次按住、微信真实文字写入、半秒间隔两句、M/I 零漏出、
+Fn 释放及麦克风恢复的实测。当前源码构建 `.34` 还修复了 review 发现的异常报告、识别完成竞态
+和打包问题，详见验证记录；不把自动测试当作新版本的真机验收。首次音频组件初始化曾耗时
+约 2.1 秒，后续真实冷重连从设备枚举到 Fn 约 0.18 秒，不代表所有冷启动均能保证相同延迟。
+
+临时提权接口 `AuthorizationExecuteWithPrivileges` 已弃用，重新启动捕获仍可能认证；
+没有实现或安装免重复认证服务。Apple 捕获工具/系统版本变化也可能影响该入口。
+**本轮不重新安装本机已验证的 `.33`，不发布新 GitHub Release。**
+
+- [逐字节语音协议](docs/VOICE_PROTOCOL.md)：封装、偏移、采样参数、筛选和未决字段。
+- [实现与生命周期](docs/VOICE_IMPLEMENTATION.md)：键盘独占、通信、识别、流式送音和恢复。
+- [Review 与验证](docs/REVIEW_20261103.md)：修复项、自动验证、真机证据边界。
+- [临时捕获依赖与权限](docs/CAPTURE_SERVICE.md)。
 
 ## 自定义按键映射
 
@@ -156,22 +202,24 @@ Tab 切换配置组，双击 Tab 可重命名，“-”用于删除当前组（�
 4. 运行内置自测，确认按键解析、型号隔离和事件过滤逻辑：
 
    ```sh
-   .build/arm64-apple-macosx/release/IPRC1000Adapter --self-test
+   "$(swift build --disable-sandbox -c release --sdk "$SDKROOT" --show-bin-path)/IPRC1000Adapter" --self-test
    ```
 
 ## 隔离范围说明
 
-HID 设备订阅使用产品名、VID 和 PID 三重匹配。为了阻止目标遥控器原始键值继续进入
-macOS，应用还会监听全局键盘事件，并通过键码和硬件时间戳与目标 HID 报告关联。正常情况
-下其他键盘、鼠标和触控板不受影响；但 macOS 的 CGEvent 不直接携带物理设备句柄，因此
-极端同时按键情况下仍存在很小的时间关联碰撞可能。详见源码中的
-`HIDController.swift` 和 `RemoteEventFilter.swift`。
+语音模式的 IOHIDManager 在枚举前设置 VID/PID、产品名、Bluetooth 与精确 SerialNumber
+匹配，以 `kIOHIDOptionsTypeSeizeDevice` 打开当前和未来的目标设备。不会使用全局 CGEventTap
+读取或延迟其他键盘事件。非语音启动路径保留目标键盘服务的 `UserKeyMapping` 映射；
+该映射写入回读不等同于原始事件隔离验收，可靠拦截的本轮验证使用的是临时独占路径。
+
+PacketLogger 的底层 HCI 流范围与键盘独占不同：它包含其他本机蓝牙包。严格目标过滤发生在
+管理员进程内，不保存原始流；只把目标 F7 和通过 IOHID 独占读到的目标按键交给前台。
+未经身份校验的包不能仅凭出现 F7 字节就作为音频。不要将此入口称为“底层只读单设备”。
 
 ## 实验与研究记录
 
 - [IPRC1000 语音实验记录](docs/VOICE_EXPERIMENT_NOTES.md)：汇总已尝试的协议路径、真机
-  观察、碰壁原因、证据边界和后续探索建议。该内容仅用于继续研究，不代表当前语音功能
-  已实现。
+  观察和失败路径；旧日期章节保留当时结论，当前状态以上述协议、实现与验证文档为准。
 
 ## 开源协议与第三方内容
 
@@ -180,6 +228,7 @@ macOS，应用还会监听全局键盘事件，并通过键码和硬件时间戳
 
 第三方内容不因项目采用 MIT 而改变原许可证或权利归属：
 
+- VibeStick 微信流式组件沿用其 MIT 许可，来源及本地适配见 [NOTICE.md](NOTICE.md)。
 - BlueZ SBC 库保持 `LGPL-2.1-or-later`；上游源码归档中的独立命令行工具按其文件标记
   使用 `GPL-2.0-or-later`。
 - `Vendor/Source/sbc-2.2.tar.xz` 提供对应的未修改源码和完整上游许可证文本。

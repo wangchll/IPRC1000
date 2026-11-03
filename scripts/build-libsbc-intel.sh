@@ -11,7 +11,7 @@ tar -xf "$archive" -C "$build_dir"
 source_dir="$build_dir/sbc-2.2/sbc"
 mkdir -p "$build_dir/objects" "$output_dir"
 
-sdk=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
+sdk=${IPRC1000_SDK_PATH:-/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk}
 common_flags=(-arch x86_64 -O2 -fPIC -DSBC_HIGH_PRECISION -mmacosx-version-min=14.0 -isysroot "$sdk" -I"$source_dir")
 
 clang -c $common_flags \

@@ -15,7 +15,8 @@ let package = Package(
             name: "CRemoteSupport",
             linkerSettings: [
                 .unsafeFlags(["-L\(sbcLibraryPath)"]),
-                .linkedLibrary("sbc")
+                .linkedLibrary("sbc"),
+                .linkedFramework("Security")
             ]
         ),
         .executableTarget(

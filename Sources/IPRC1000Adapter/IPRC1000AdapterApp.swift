@@ -1,4 +1,6 @@
 import AppKit
+import CRemoteSupport
+import IOKit.hid
 import Darwin
 import SwiftUI
 import UniformTypeIdentifiers
@@ -12,8 +14,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusPopover = NSPopover()
 
     static func main() {
+        if (CommandLine.arguments.count == 3 || (CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--replay-wechat-rapid")),
+           ["--replay-wechat", "--replay-wechat-rapid"].contains(CommandLine.arguments[1]) {
+            Darwin.exit(WeChatReplay.run(path: CommandLine.arguments[2], rapid: CommandLine.arguments[1] == "--replay-wechat-rapid",
+                secondPath: CommandLine.arguments.count == 4 ? CommandLine.arguments[3] : nil))
+        }
+        if CommandLine.arguments.contains("--hci-capture-helper") {
+            guard CommandLine.arguments.count == 3 else { Darwin.exit(64) }
+            Darwin.exit(TemporaryVoiceCapture.run(address: CommandLine.arguments[2]))
+        }
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "--check-hci-trace" {
+            guard let text = try? String(contentsOfFile: CommandLine.arguments[2], encoding: .utf8) else {
+                Darwin.exit(1)
+            }
+            let frames = text.split(separator: "\n").compactMap {
+                HCIVoiceLine.parse(String($0), address: CommandLine.arguments[3])
+            }
+            print("HCI replay: \(frames.count) verified frames, \(frames.count * 320) PCM samples")
+            Darwin.exit(frames.isEmpty ? 1 : 0)
+        }
         if CommandLine.arguments.contains("--self-test") {
             Darwin.exit(SelfTest.run() ? 0 : 1)
+        }
+        if CommandLine.arguments.contains("--request-device-input-access") {
+            guard geteuid() != 0 else {
+                fputs("Input Monitoring must be requested by the logged-in user before administrator execution.\n", stderr)
+                Darwin.exit(77)
+            }
+            let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+            print(granted ? "Input Monitoring granted" : "Enable this diagnostic in System Settings > Privacy & Security > Input Monitoring")
+            Darwin.exit(granted ? 0 : 77)
+        }
+        if CommandLine.arguments.contains("--diagnose-exclusive") {
+            let args = CommandLine.arguments
+            guard args.count == 3, args[2].count == 12,
+                  args[2].allSatisfy({ $0.isHexDigit }) else { Darwin.exit(64) }
+            let address = args[2]
+            Darwin.exit(DiagnosticRunner.runExclusive(address: address))
         }
         if CommandLine.arguments.contains("--diagnose") {
             Darwin.exit(DiagnosticRunner.run())
@@ -50,6 +87,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showSettings(nil)
         return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.shutdown()
     }
 
     @objc private func toggleStatusPopover(_ sender: Any?) {
@@ -396,6 +437,7 @@ struct SettingsView: View {
     @ObservedObject var model: AppModel
     @ObservedObject private var mappings: MappingStore
     @State private var editingKey: RemoteKey?
+    @State private var editingVoiceShortcut = false
     @State private var section: SettingsSection = .overview
     @State private var mappingSearch = ""
     @State private var profileName = ""
@@ -432,6 +474,11 @@ struct SettingsView: View {
                 current: mappings.values[key] ?? .none
             ) { binding in
                 mappings.values[key] = binding
+            }
+        }
+        .sheet(isPresented: $editingVoiceShortcut) {
+            KeyboardPickerView(remoteKey: .microphone, current: model.externalShortcut) {
+                model.externalShortcut = $0
             }
         }
         .alert("重命名配置组", isPresented: Binding(
@@ -559,7 +606,9 @@ struct SettingsView: View {
                 Text(model.lastKey == "—" ? "等待遥控器输入" : model.lastKey).fontWeight(.semibold)
                 Spacer()
                 if model.lastKey != "—" {
-                    Text("已转译").font(.caption.bold()).foregroundStyle(.green)
+                    let binding = model.lastRemoteKey.flatMap { mappings.values[$0] }
+                    Text(binding?.kind == KeyBinding.Kind.none ? "已检测，未映射" : "已转译")
+                        .font(.caption.bold()).foregroundStyle(.green)
                 }
             }
             .padding(16)
@@ -773,6 +822,16 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
+                    Button("启动临时蓝牙语音") { model.startDeviceVoice() }
+                        .disabled(model.deviceVoiceActive)
+                    Button("停止语音") { model.stopDeviceVoice() }
+                    Button("重试音频接收") { model.retryDeviceAudio() }
+                        .disabled(!model.deviceVoiceActive)
+                }
+                Text(model.deviceVoiceStatus).font(.callout).textSelection(.enabled)
+                Text(model.voiceInputDiagnostics)
+                    .font(.callout.monospacedDigit()).textSelection(.enabled)
+                HStack {
                     Label("实时麦克风电平", systemImage: "waveform")
                         .font(.headline).foregroundStyle(.purple)
                     Spacer()
@@ -780,6 +839,30 @@ struct SettingsView: View {
                         .font(.caption.bold()).foregroundStyle(model.voiceReady ? .green : .secondary)
                 }
                 ProgressView(value: Double(model.voiceLevel), total: 1).tint(.purple)
+                Picker("识别方式", selection: $model.inputProvider) {
+                    ForEach(VoiceInputProvider.allCases) { provider in
+                        Text(provider.title).tag(provider)
+                    }
+                }
+                if model.inputProvider == .externalIME {
+                    HStack {
+                        Button("输入法快捷键：\(model.externalShortcut.title)") { editingVoiceShortcut = true }
+                        Toggle("松开时再次发送（开关式快捷键）", isOn: $model.externalShortcutToggles)
+                    }
+                    Text("微信麦克风请选择“自动检测”。说话时临时切换输入源与 BlackHole，音频排空后恢复默认麦克风和原输入源。外部服务是否联网由该输入法决定。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("启用光标处语音输入") { model.enableTranscription() }
+                        .disabled(model.inputRequested || !model.deviceVoiceActive)
+                    Button("停用输入") { model.stopVoiceInput() }
+                    Button("打开浏览器测试光标输入") { model.testCursorInput() }
+                    Text(model.transcriptionStatus).font(.caption)
+                }
+                Text(model.cursorInputStatus).font(.callout).textSelection(.enabled)
+                if !model.transcript.isEmpty {
+                    Text(model.transcript).font(.body).textSelection(.enabled)
+                }
             }
             .padding(16)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -788,8 +871,9 @@ struct SettingsView: View {
                 Label("使用方式", systemImage: "info.circle.fill").font(.headline)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("1. 保持本 App 在菜单栏运行。")
-                    Text("2. 在 Zoom、微信、录音软件等目标 App 中，把麦克风选为 “BlackHole 2ch”。")
-                    Text("3. 按住遥控器麦克风键说话，松开结束。")
+                    Text("2. 启动临时蓝牙语音，选择识别方式，再点击“启用光标处语音输入”。")
+                    Text("3. 点击目标输入框，按住遥控器麦克风键说话，松开结束。微信语音输入的麦克风使用“自动检测”。")
+                    Text("如仅用于通话或录音，请把目标软件的麦克风选为“BlackHole 2ch”。")
                     Text("不要同时把系统扬声器输出设为 BlackHole，否则你会听不到声音；如需监听，请另建多输出设备。")
                         .foregroundStyle(.orange)
                 }

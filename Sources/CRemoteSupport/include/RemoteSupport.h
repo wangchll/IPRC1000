@@ -16,4 +16,7 @@ int iprc_sbc_decode_msbc(IPRCSBCDecoderRef decoder,
                          int16_t *output,
                          size_t output_capacity);
 
+int iprc_hci_tool_valid(void);
+int iprc_hci_open(const char *executable, const char *address, int *descriptor);
+
 #endif

@@ -24,6 +24,17 @@ The library remains under its upstream license and is not relicensed under the
 project's MIT License. The corresponding source and build script are provided
 so recipients can rebuild the library and relink the application.
 
+## VibeStick WeChat Input helper
+
+`Vendor/VibeStick/wechat_input.swift` is adapted from the VibeStick project's
+`bridge/tools/vibe_stick_wechat_input.swift`, Copyright (c) 2026 Gary Zhang,
+under the MIT License. The bundled version adds an audio-only mode and a
+readiness message so the adapter can own Fn and temporary microphone routing.
+The upstream license is preserved in `Vendor/VibeStick/LICENSE` and in the
+packaged helper's Resources directory.
+
+Source: https://github.com/wangchll/VibeStick
+
 ## IPRC1000 product photograph
 
 The IPRC1000 product photograph shown in the application is cropped from the

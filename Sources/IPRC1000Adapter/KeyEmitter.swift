@@ -6,6 +6,26 @@ import os
 enum KeyEmitter {
     static let functionVirtualKey: CGKeyCode = 63
     private static let logger = Logger(subsystem: "local.iprc1000.adapter", category: "KeyEmitter")
+    @MainActor
+    static func pasteText(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        let saved = (pasteboard.pasteboardItems ?? []).map { item in
+            let copy = NSPasteboardItem()
+            for type in item.types {
+                if let data = item.data(forType: type) { copy.setData(data, forType: type) }
+            }
+            return copy
+        }
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
+        let ownedChange = pasteboard.changeCount
+        keyboard(9, flags: .maskCommand)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            guard pasteboard.changeCount == ownedChange else { return }
+            pasteboard.clearContents()
+            pasteboard.writeObjects(saved)
+        }
+    }
     static func emit(_ binding: KeyBinding) {
         if binding.isFunctionOnly {
             functionEvent(isDown: true)
@@ -55,7 +75,7 @@ enum KeyEmitter {
         guard let event = CGEvent(
             keyboardEventSource: source,
             virtualKey: functionVirtualKey,
-            keyDown: false
+            keyDown: isDown
         ) else { return }
         event.type = .flagsChanged
         event.flags = isDown ? .maskSecondaryFn : []
@@ -108,7 +128,7 @@ enum KeyEmitter {
     }
 
     private static func post(_ event: CGEvent) {
-        event.setIntegerValueField(.eventSourceUserData, value: RemoteEventFilter.syntheticMarker)
+        event.setIntegerValueField(.eventSourceUserData, value: RemoteKeyCode.syntheticMarker)
         event.post(tap: .cghidEventTap)
     }
 
@@ -127,7 +147,7 @@ enum KeyEmitter {
                 data1: data1,
                 data2: -1
             )?.cgEvent
-            event?.setIntegerValueField(.eventSourceUserData, value: RemoteEventFilter.syntheticMarker)
+            event?.setIntegerValueField(.eventSourceUserData, value: RemoteKeyCode.syntheticMarker)
             event?.post(tap: .cghidEventTap)
         }
     }

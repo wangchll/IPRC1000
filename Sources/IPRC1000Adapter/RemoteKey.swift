@@ -315,8 +315,15 @@ struct KeyBinding: Codable, Equatable {
 }
 
 enum HIDReportParser {
+    static func isValidKeyboardReport(_ report: [UInt8], reportID: Int = 1) -> Bool {
+        guard reportID == 1, report.count == 8 || (report.count == 9 && report.first == 1) else { return false }
+        let offset = report.count == 9 ? 1 : 0
+        // HID ErrorRollOver/POSTFail/ErrorUndefined do not describe a new key state.
+        return !report[(offset + 2)..<(offset + 8)].contains(where: { (1...3).contains($0) })
+    }
+
     static func rawUsages(from report: [UInt8], reportID: Int = 1) -> Set<UInt8> {
-        guard reportID == 1 else { return [] }
+        guard isValidKeyboardReport(report, reportID: reportID) else { return [] }
         let payload = report.count == 9 && report.first == 1
             ? Array(report.dropFirst()) : report
         guard payload.count >= 8 else { return [] }

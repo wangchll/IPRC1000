@@ -14,8 +14,12 @@ IPRC1000 Adapter 是一款常驻 macOS 菜单栏的遥控器适配工具，面�
 ## 下载与安装
 
 从 [GitHub Releases](https://github.com/wangchll/IPRC1000/releases/latest) 下载
-`IPRC1000-Adapter-0.2.2-GitHub-AdHoc.dmg`。该历史 Release **不包含本文新增的语音适配**；
-最新语音功能目前从源码构建，不能把仓库更新视为已发布新 DMG。历史包安装步骤：
+适合本机架构的 **v0.3.0** 安装包：
+
+- Apple Silicon：`IPRC1000-Adapter-0.3.0-AppleSilicon-GitHub-AdHoc.dmg`。
+- Intel：`IPRC1000-Adapter-0.3.0-Intel-GitHub-AdHoc.dmg`。
+
+随附SHA-256校验文件；v0.2.2及更早版本不包含本次新增的语音适配。安装步骤：
 
 1. 打开 DMG，把 `IPRC1000 Adapter.app` 拖入“应用程序”。
 2. 首次启动时，如果 macOS 提示无法验证开发者，先尝试打开一次应用，然后进入
@@ -92,7 +96,7 @@ scripts/package-app-intel.sh
 ```
 
 Intel 产物要求 macOS 14 或更高版本。发布 DMG 时请在文件名中保留 `Intel` 标记，
-例如 `IPRC1000-Adapter-0.2.2-Intel-GitHub-AdHoc.dmg`。Intel 版使用独立的
+例如 `IPRC1000-Adapter-0.3.0-Intel-GitHub-AdHoc.dmg`。Intel 版使用独立的
 `Vendor/lib-intel`；二进制位置通过指定 triple 后的 `--show-bin-path` 获取。
 较新的 SwiftPM/Xcode 后端可能复用 `.build/out` 中间目录，因此构建两种架构应顺序执行，
 分发产物保持不同名称，不并行覆盖。
@@ -138,7 +142,7 @@ Fn 释放及麦克风恢复的实测。当前源码构建 `.34` 还修复了 rev
 
 临时提权接口 `AuthorizationExecuteWithPrivileges` 已弃用，重新启动捕获仍可能认证；
 没有实现或安装免重复认证服务。Apple 捕获工具/系统版本变化也可能影响该入口。
-**本轮不重新安装本机已验证的 `.33`，不发布新 GitHub Release。**
+**v0.3.0（构建20261103.34）提供上述两个架构的Release安装包；它没有自动替换本机已验证的 `.33`。**
 
 - [逐字节语音协议](docs/VOICE_PROTOCOL.md)：封装、偏移、采样参数、筛选和未决字段。
 - [实现与生命周期](docs/VOICE_IMPLEMENTATION.md)：键盘独占、通信、识别、流式送音和恢复。

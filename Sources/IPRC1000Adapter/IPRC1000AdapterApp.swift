@@ -822,11 +822,19 @@ struct SettingsView: View {
 
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    Button("启动临时蓝牙语音") { model.startDeviceVoice() }
+                    Button("启用独占按键适配") { model.startKeyboardAdaptation() }
                         .disabled(model.deviceVoiceActive)
-                    Button("停止语音") { model.stopDeviceVoice() }
+                    Button("停止接管") { model.stopDeviceVoice() }
+                }
+                Text("按键适配独立运行，无需 PacketLogger；启动接管需要系统认证，不安装常驻服务。蓝牙语音另需 Apple PacketLogger。")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("启动临时蓝牙语音") { model.startDeviceVoice() }
+                        .disabled(model.deviceAudioEnabled)
+                    Button("停止语音") { model.stopDeviceAudio() }
+                        .disabled(!model.deviceAudioEnabled)
                     Button("重试音频接收") { model.retryDeviceAudio() }
-                        .disabled(!model.deviceVoiceActive)
+                        .disabled(!model.deviceAudioEnabled)
                 }
                 Text(model.deviceVoiceStatus).font(.callout).textSelection(.enabled)
                 Text(model.voiceInputDiagnostics)
@@ -854,7 +862,7 @@ struct SettingsView: View {
                 }
                 HStack {
                     Button("启用光标处语音输入") { model.enableTranscription() }
-                        .disabled(model.inputRequested || !model.deviceVoiceActive)
+                        .disabled(model.inputRequested || !model.deviceAudioEnabled)
                     Button("停用输入") { model.stopVoiceInput() }
                     Button("打开浏览器测试光标输入") { model.testCursorInput() }
                     Text(model.transcriptionStatus).font(.caption)
@@ -871,7 +879,7 @@ struct SettingsView: View {
                 Label("使用方式", systemImage: "info.circle.fill").font(.headline)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("1. 保持本 App 在菜单栏运行。")
-                    Text("2. 启动临时蓝牙语音，选择识别方式，再点击“启用光标处语音输入”。")
+                    Text("2. 仅使用按键时，点击“启用独占按键适配”。语音另需启动临时蓝牙语音，选择识别方式，再启用光标输入。")
                     Text("3. 点击目标输入框，按住遥控器麦克风键说话，松开结束。微信语音输入的麦克风使用“自动检测”。")
                     Text("如仅用于通话或录音，请把目标软件的麦克风选为“BlackHole 2ch”。")
                     Text("不要同时把系统扬声器输出设为 BlackHole，否则你会听不到声音；如需监听，请另建多输出设备。")

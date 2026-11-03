@@ -54,7 +54,7 @@ final class RemoteDeviceKeyFilter {
                 && IOHIDServiceClientConformsTo(candidate, 1, 6) != 0
         }
         guard targets.count == 1, let target = targets.first else {
-            status = "需要唯一匹配遥控器地址的键盘服务（当前 \(targets.count) 个）"
+            status = "已识别遥控器；普通模式键盘服务未就绪（匹配 \(targets.count) 个）。请在连接诊断启用独占按键适配"
             return false
         }
         let mapping = Self.mappings as NSArray

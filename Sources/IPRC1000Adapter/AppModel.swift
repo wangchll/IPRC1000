@@ -16,6 +16,7 @@ final class AppModel: ObservableObject {
     @Published var deviceVoiceStatus = "临时 HCI 音频未启动；按键仅接管目标遥控器"
     @Published var deviceVoiceActive = false
     @Published var deviceAudioAvailable = false
+    @Published var deviceAudioEnabled = false
     @Published var transcript = ""
     @Published var transcriptionStatus = "转写未启动"
     @Published var cursorInputStatus = "启用后，请点入目标输入框，按住遥控器麦克风说话，松开后自动输入"
@@ -184,6 +185,14 @@ final class AppModel: ObservableObject {
                 self.voice.connectionChanged(false)
             }
         }
+        deviceVoice.onAudioMode = { [weak self] enabled in
+            guard let self else { return }
+            self.deviceAudioEnabled = enabled
+            if !enabled {
+                self.stopVoiceInput(preservingRequest: true)
+                self.voice.connectionChanged(false)
+            } else if self.inputRequested { self.enableTranscription() }
+        }
         deviceVoice.onReport = { [weak self] report, changed in
             guard let self else { return }
             if changed { self.voice.connectionChanged(true) }
@@ -230,9 +239,16 @@ final class AppModel: ObservableObject {
     }
 
     func startDeviceVoice() {
-        guard !deviceVoice.isRunning else { return }
-        hid.stop()
-        deviceVoice.start()
+        if !deviceVoice.isRunning { hid.stop() }
+        deviceVoice.start(audio: true)
+    }
+    func startKeyboardAdaptation() {
+        if !deviceVoice.isRunning { hid.stop() }
+        deviceVoice.start(audio: false)
+    }
+    func stopDeviceAudio() {
+        stopVoiceInput()
+        deviceVoice.stopAudio()
     }
     func retryDeviceAudio() { deviceVoice.retryAudio() }
     func stopDeviceVoice() {
@@ -241,7 +257,7 @@ final class AppModel: ObservableObject {
         if hidStarted { hid.start() }
     }
     func enableTranscription() {
-        guard deviceVoiceActive else {
+        guard deviceVoiceActive, deviceAudioEnabled else {
             cursorInputStatus = "请先启动临时蓝牙语音捕获"
             return
         }

@@ -316,6 +316,21 @@ enum SelfTest {
         if case .audioReset = CaptureMessage.parse("A 0") {} else {
             failures.append("audio restart notification is distinct from losing target isolation")
         }
+        if case .audioMode(false) = CaptureMessage.parse("M 0"),
+           case .audioMode(true) = CaptureMessage.parse("M 1") {} else {
+            failures.append("optional audio mode is distinct from keyboard isolation")
+        }
+        check(CaptureMessage.parse("M 2") == nil
+              && CaptureCommand(rawValue: 65) == .startAudio
+              && CaptureCommand(rawValue: 83) == .stopAudio
+              && CaptureCommand(rawValue: 82) == .retryAudio
+              && CaptureCommand(rawValue: 0) == nil,
+              "only fixed audio lifecycle commands are accepted", into: &failures)
+        check(CaptureFailure.message(-1001).contains("按键接管可独立")
+              && CaptureFailure.message(-1003).contains("签名")
+              && CaptureFailure.message(-1002).contains("通信")
+              && CaptureFailure.message(-60006).contains("取消"),
+              "missing tools, signature, IPC and cancelled authorization have distinct guidance", into: &failures)
         var diagnosticWindow = ExclusiveDiagnosticWindow(start: 0)
         check(!diagnosticWindow.expired(at: 120) && !diagnosticWindow.expired(at: 899)
               && diagnosticWindow.expired(at: 900),

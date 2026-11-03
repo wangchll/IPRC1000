@@ -53,6 +53,8 @@ IOHID 只匹配这只遥控器，**PacketLogger 底层仍接触本机其他蓝�
 ## 临时通信与故障恢复
 
 管理员进程经 `AuthorizationExecuteWithPrivileges` 启动，参数是唯一配对地址，不接收任意 shell 命令。
+0.3.1起，管理员启动先仅接管键盘，不校验或启动PacketLogger。只有前台明确请求音频时才验证并启动Apple工具；
+缺工具、签名错误、音频停止均保留目标键盘接管。语音本身仍依赖PacketLogger。
 该已弃用接口用于当前兼容路径；启动捕获可能需要再次认证，不是安全的常驻 helper 方案。
 
 换行分隔的消息如下（仅发送目标数据）：
@@ -63,10 +65,12 @@ IOHID 只匹配这只遥控器，**PacketLogger 底层仍接触本机其他蓝�
 | `I 1` / `I 0` | 目标独占已建立 / 丢失 |
 | `K <18位HEX>` | 9 字节目标键盘报告 |
 | `F <十进制handle> <base64>` | 已筛选的 652 字节目标 F7 报告 |
+| `M 1` / `M 0` | 音频模式开启 / 关闭，与键盘隔离状态独立 |
 | `A 0` | 音频进程重置；键盘独占保持，前台结束旧语音会话 |
 | `S <状态>` / `ERROR <原因>` | 状态或终止错误 |
 
-前台仅可发单字节 `R` 重试音频；其他命令结束会话，不执行外部字符串。
+前台仅可发固定单字节 `A`（开启音频）、`S`（停止音频）和 `R`（已开启时重试音频）；
+其他命令结束会话，不执行外部字符串。手动停止并重新开启音频会清除恢复水位，避免重放停用期间的缓冲包。
 写入队列在 EAGAIN 时重试；音频队列达 256 KiB 后丢弃新增音频，保留控制容量，总队列上限 1 MiB。
 真实 EOF/EPIPE/硬错误才终止。Apple 输出单行超过 64 KiB 时丢弃该行至换行，不能连带释放键盘。
 音频子进程退出后清理并指数退避重启（0.25 秒起、最多 30 秒），恢复水位阻止重放旧音频。
@@ -110,3 +114,16 @@ IOHID 只匹配这只遥控器，**PacketLogger 底层仍接触本机其他蓝�
 `Tools/TargetBluetoothProbe` 保留历史定向 L2CAP 实验，不被产品调用。`--run`/`--listen` 会尝试目标 ignore hint 或打开通道，
 `--interrupt` 也发起异步通道请求；它们不是普通只读检查，不应作为安装/启动前置。其成功返回过请求对象但没有获得真实 F7，
 详见历史研究记录；本次只运行不访问硬件的 `--self-test`。
+
+## 0.3.1无工具启动回归
+
+`Tools/CaptureStartupSelfTest/main.c`直接包含生产C启动代码；将PacketLogger存在性检查模拟为ENOENT、系统认证/执行替换为无权限副作用的桩。
+验证缺工具仍进入管理员按键启动流程、目标参数准确传递、FD带CLOEXEC、取消认证不启动进程、通信缺失明确报错。
+此测试不运行真正管理员进程，不代替另一台Mac的独占验收：
+
+```sh
+clang -O1 -g -fsanitize=address,undefined -I Sources/CRemoteSupport/include \
+  -framework Security -framework CoreFoundation \
+  Tools/CaptureStartupSelfTest/main.c -o /private/tmp/iprc-capture-startup-selftest
+/private/tmp/iprc-capture-startup-selftest
+```

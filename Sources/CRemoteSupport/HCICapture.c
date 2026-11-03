@@ -7,7 +7,9 @@
 
 static const char *tool = "/Applications/PacketLogger.app/Contents/Resources/packetlogger";
 
-int iprc_hci_tool_valid(void) {
+int iprc_hci_tool_status(void) {
+    if (access(tool, F_OK) != 0) return -1001;
+    if (access(tool, X_OK) != 0) return -1004;
     CFURLRef url = CFURLCreateFromFileSystemRepresentation(NULL,
         (const UInt8 *)tool, strlen(tool), false);
     SecStaticCodeRef code = NULL;
@@ -20,12 +22,11 @@ int iprc_hci_tool_valid(void) {
     if (requirement) CFRelease(requirement);
     if (code) CFRelease(code);
     CFRelease(url);
-    return result == errSecSuccess;
+    return result == errSecSuccess ? 0 : -1003;
 }
 
 int iprc_hci_open(const char *executable, const char *address, int *descriptor) {
     *descriptor = -1;
-    if (!iprc_hci_tool_valid()) return -1001;
     AuthorizationRef authorization = NULL;
     OSStatus result = AuthorizationCreate(NULL, kAuthorizationEmptyEnvironment,
         kAuthorizationFlagDefaults, &authorization);
@@ -39,7 +40,8 @@ int iprc_hci_open(const char *executable, const char *address, int *descriptor) 
         kAuthorizationFlagDefaults, arguments, &communication);
 #pragma clang diagnostic pop
     AuthorizationFree(authorization, kAuthorizationFlagDefaults);
-    if (result == errAuthorizationSuccess && communication) {
+    if (result == errAuthorizationSuccess) {
+        if (!communication) return -1002;
         *descriptor = dup(fileno(communication));
         fclose(communication);
         if (*descriptor < 0) return -1002;

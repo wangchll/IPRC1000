@@ -40,13 +40,34 @@ import CRemoteSupport
 import Darwin
 import IOBluetooth
 import os
+import Security
+
+enum CaptureCommand: UInt8 {
+    case startAudio = 65, retryAudio = 82, stopAudio = 83
+}
+
+enum CaptureFailure {
+    static func message(_ code: Int32) -> String {
+        switch code {
+        case -1001: "未找到 PacketLogger；语音需安装 /Applications/PacketLogger.app，按键接管可独立使用"
+        case -1003: "PacketLogger 未通过 Apple 签名校验；请使用 Apple 官方工具，按键接管可独立使用"
+        case -1004: "PacketLogger 命令行工具不可执行；请重新安装 Apple 官方工具"
+        case -1002, 0: "临时接管进程未建立通信，请重新启动按键接管（\(code)）"
+        case errAuthorizationCanceled: "已取消系统认证，目标按键接管尚未启动"
+        case errAuthorizationDenied: "系统未允许临时管理员接管（\(code)）"
+        default: "临时接管启动失败（\(code)）"
+        }
+    }
+}
 
 /// Wire messages contain only target reports; raw HCI lines never leave the helper.
 enum CaptureMessage {
-    case ready, audioReset, isolation(Bool), keyboard([UInt8]), voice([UInt8], UInt16), status(String), failure(String)
+    case ready, audioReset, audioMode(Bool), isolation(Bool), keyboard([UInt8]), voice([UInt8], UInt16), status(String), failure(String)
     static func parse(_ line: String) -> CaptureMessage? {
         if line.hasPrefix("ERROR "), line.count < 1024 { return .failure(String(line.dropFirst(6))) }
         if line == "A 0" { return .audioReset }
+        if line == "M 1" { return .audioMode(true) }
+        if line == "M 0" { return .audioMode(false) }
         if line == "READY" { return .ready }
         if line == "I 1" { return .isolation(true) }
         if line == "I 0" { return .isolation(false) }
@@ -79,6 +100,9 @@ final class HCIVoiceInput {
     var onStatus: (String, Bool) -> Void = { _, _ in }
     var onAudioAvailable: (Bool) -> Void = { _ in }
     var onInputDiagnostics: (String) -> Void = { _ in }
+    var onAudioMode: (Bool) -> Void = { _ in }
+    private(set) var audioEnabled = false
+    private var wantsAudio = false
     private(set) var isRunning = false
     private var generation = 0
     private var descriptor: Int32 = -1
@@ -89,8 +113,11 @@ final class HCIVoiceInput {
     private var frames = 0
     private var keyboardReports = 0
 
-    func start() {
-        guard !isRunning else { return }
+    func start(audio: Bool = true) {
+        guard !isRunning else {
+            if audio { startAudio() }
+            return
+        }
         let targets = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice] ?? [])
             .filter { $0.name == TargetRemote.productName }
         guard targets.count == 1, let address = targets.first?.addressString,
@@ -101,7 +128,8 @@ final class HCIVoiceInput {
         generation += 1
         let session = generation
         isRunning = true
-        onStatus("等待管理员认证：临时接管目标按键并启动 HCI 音频", false)
+        wantsAudio = audio
+        onStatus("等待管理员认证：仅接管目标遥控器按键，不依赖 PacketLogger", false)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             var fd: Int32 = -1
             let result = iprc_hci_open(executable, targetAddress, &fd)
@@ -112,7 +140,7 @@ final class HCIVoiceInput {
                 }
                 guard result == 0, opened >= 0 else {
                     self.stop()
-                    self.onStatus("临时捕获启动失败（\(result)）", false); return
+                    self.onStatus(CaptureFailure.message(result), false); return
                 }
                 self.descriptor = opened
                 _ = fcntl(opened, F_SETFL, fcntl(opened, F_GETFL) | O_NONBLOCK)
@@ -130,6 +158,9 @@ final class HCIVoiceInput {
         timer?.invalidate(); timer = nil
         if descriptor >= 0 { close(descriptor); descriptor = -1 }
         pending.removeAll()
+        wantsAudio = false
+        audioEnabled = false
+        onAudioMode(false)
         isolated = false; handle = nil; frames = 0; keyboardReports = 0; isRunning = false
         publishDiagnostics()
         onIsolation(false); onAudioAvailable(false)
@@ -137,13 +168,38 @@ final class HCIVoiceInput {
     }
 
     func retryAudio() {
-        guard descriptor >= 0, fcntl(descriptor, F_GETNOSIGPIPE, 0) == 1 else { return }
-        var command: UInt8 = 82
-        guard Darwin.write(descriptor, &command, 1) == 1 else {
+        guard audioEnabled else { return }
+        guard send(.retryAudio) else {
             onStatus("音频重试请求未发送，捕获连接可能已结束", isRunning)
             return
         }
         onStatus("正在重试音频接收；目标按键接管保持", true)
+    }
+
+    func startAudio() {
+        wantsAudio = true
+        guard descriptor >= 0 else { return }
+        let status = iprc_hci_tool_status()
+        guard status == 0 else {
+            wantsAudio = false
+            onStatus(CaptureFailure.message(status), true)
+            return
+        }
+        if !send(.startAudio) { onStatus("音频启动请求未发送，请检查按键接管连接", true) }
+    }
+
+    func stopAudio() {
+        wantsAudio = false
+        if descriptor >= 0 { _ = send(.stopAudio) }
+        audioEnabled = false
+        onAudioMode(false)
+        onAudioAvailable(false)
+    }
+
+    private func send(_ command: CaptureCommand) -> Bool {
+        guard descriptor >= 0, fcntl(descriptor, F_GETNOSIGPIPE, 0) == 1 else { return false }
+        var byte = command.rawValue
+        return Darwin.write(descriptor, &byte, 1) == 1
     }
 
     private func readAvailable() {
@@ -166,11 +222,18 @@ final class HCIVoiceInput {
             pending.removeSubrange(...end)
             guard let message = CaptureMessage.parse(line) else { continue }
             switch message {
+            case .audioMode(let enabled):
+                audioEnabled = enabled
+                onAudioMode(enabled)
+                if !enabled { handle = nil; onAudioAvailable(false) }
+                publishDiagnostics()
             case .audioReset:
                 handle = nil
                 onAudioAvailable(false)
                 if isolated { onIsolation(false); onIsolation(true) }
-            case .ready: onStatus("临时 HCI 接收已启动，等待目标遥控器", true)
+            case .ready:
+                onStatus("目标按键接管进程已启动；音频可单独开启", true)
+                if wantsAudio { startAudio() }
             case .isolation(let ready):
                 isolated = ready; handle = nil
                 onIsolation(ready)
@@ -183,7 +246,7 @@ final class HCIVoiceInput {
                     publishDiagnostics()
                 }
             case .voice(let report, let nextHandle):
-                guard isolated else { continue }
+                guard isolated, audioEnabled else { continue }
                 let changed = handle != nextHandle
                 handle = nextHandle
                 frames += 1
@@ -202,7 +265,7 @@ final class HCIVoiceInput {
     }
 
     private func publishDiagnostics() {
-        onInputDiagnostics("目标独占：\(isolated ? "已接管" : "等待连接") · 按键报告 \(keyboardReports) · HCI F7 \(frames) 帧")
+        onInputDiagnostics("目标独占：\(isolated ? "已接管" : "等待连接") · 按键报告 \(keyboardReports) · 音频\(audioEnabled ? "已启用" : "已关闭") · HCI F7 \(frames) 帧")
     }
 }
 

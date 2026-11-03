@@ -12,9 +12,6 @@ enum TemporaryVoiceCapture {
     static func run(address: String) -> Int32 {
         guard geteuid() == 0, setuid(0) == 0,
               address.count == 12, address.allSatisfy({ $0.isHexDigit }) else { return 77 }
-        guard iprc_hci_tool_valid() != 0 else {
-            print("ERROR Apple PacketLogger 签名校验失败"); return 77
-        }
         guard IOHIDAccess.granted else {
             print("ERROR 适配器缺少输入监控授权，请在系统设置中检查 IPRC1000 Adapter"); return 77
         }
@@ -23,6 +20,7 @@ enum TemporaryVoiceCapture {
         var reader: FileHandle?
         var nextStart = 0.0
         var failures = 0
+        var audioRequested = false
         func stopAudio() {
             if let child {
                 if child.isRunning { child.terminate() }
@@ -54,7 +52,7 @@ enum TemporaryVoiceCapture {
         keys.onKeyboard = { report in
             heldReport = report
             guard isolated else { return }
-            if child == nil && HIDReportParser.rawUsages(from: report).contains(RemoteKey.microphone.rawValue) { return }
+            if audioRequested && child == nil && HIDReportParser.rawUsages(from: report).contains(RemoteKey.microphone.rawValue) { return }
             send("K " + report.map { String(format: "%02X", $0) }.joined())
         }
         var pending = BoundedCaptureLines()
@@ -62,23 +60,57 @@ enum TemporaryVoiceCapture {
         var bytes = [UInt8](repeating: 0, count: 65536)
         keys.start()
         defer { keys.stop(); stopAudio() }
+        send("M 0")
         send("READY")
         while alive {
             var byte: UInt8 = 0
             let control = read(STDIN_FILENO, &byte, 1)
             if control == 0 { exitReason = "foreground pipe EOF"; break }
             if control > 0 {
-                guard byte == 82 else { exitReason = "invalid control byte"; break } // R: retry audio only, never execute a command.
-                logger.notice("audio retry requested; target HID ownership retained")
-                send("A 0")
-                stopAudio()
-                pending = BoundedCaptureLines()
-                nextStart = ProcessInfo.processInfo.systemUptime
+                guard let command = CaptureCommand(rawValue: byte) else { exitReason = "invalid control byte"; break }
+                switch command {
+                case .startAudio:
+                    if !audioRequested {
+                        let status = iprc_hci_tool_status()
+                        if status != 0 {
+                            send("S " + CaptureFailure.message(status))
+                        } else {
+                            audioRequested = true
+                            failures = 0
+                            watermark = HCIFrameWatermark()
+                            pending = BoundedCaptureLines()
+                            nextStart = ProcessInfo.processInfo.systemUptime
+                            send("M 1")
+                        }
+                    }
+                case .stopAudio:
+                    audioRequested = false
+                    failures = 0
+                    stopAudio()
+                    pending = BoundedCaptureLines()
+                    watermark = HCIFrameWatermark()
+                    send("M 0")
+                    send("S 蓝牙语音已停止；目标按键独占保持")
+                case .retryAudio:
+                    if audioRequested {
+                        logger.notice("audio retry requested; target HID ownership retained")
+                        send("A 0")
+                        stopAudio()
+                        pending = BoundedCaptureLines()
+                        nextStart = ProcessInfo.processInfo.systemUptime
+                    }
+                }
                 continue
             }
             if control < 0 && errno != EAGAIN && errno != EINTR { exitReason = "control pipe error"; break }
-            if child == nil && ProcessInfo.processInfo.systemUptime >= nextStart {
-                guard iprc_hci_tool_valid() != 0 else { send("ERROR Apple PacketLogger 签名校验失败"); break }
+            if audioRequested && child == nil && ProcessInfo.processInfo.systemUptime >= nextStart {
+                let status = iprc_hci_tool_status()
+                guard status == 0 else {
+                    audioRequested = false
+                    send("M 0")
+                    send("S " + CaptureFailure.message(status))
+                    continue
+                }
                 let process = Process()
                 let pipe = Pipe()
                 process.executableURL = URL(fileURLWithPath: "/Applications/PacketLogger.app/Contents/Resources/packetlogger")

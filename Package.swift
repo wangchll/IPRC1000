@@ -13,6 +13,7 @@ let package = Package(
     targets: [
         .target(
             name: "CRemoteSupport",
+            cSettings: [.unsafeFlags(["-fobjc-arc"])],
             linkerSettings: [
                 .unsafeFlags(["-L\(sbcLibraryPath)"]),
                 .linkedLibrary("sbc"),

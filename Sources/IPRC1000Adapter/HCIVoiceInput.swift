@@ -43,7 +43,7 @@ import os
 import Security
 
 enum CaptureCommand: UInt8 {
-    case startAudio = 65, retryAudio = 82, stopAudio = 83
+    case startAudio = 65, startScopedAudio = 68, retryAudio = 82, stopAudio = 83
 }
 
 enum CaptureFailure {
@@ -103,6 +103,7 @@ final class HCIVoiceInput {
     var onAudioMode: (Bool) -> Void = { _ in }
     private(set) var audioEnabled = false
     private var wantsAudio = false
+    private var wantsScopedAudio = false
     private(set) var isRunning = false
     private var generation = 0
     private var descriptor: Int32 = -1
@@ -159,6 +160,7 @@ final class HCIVoiceInput {
         if descriptor >= 0 { close(descriptor); descriptor = -1 }
         pending.removeAll()
         wantsAudio = false
+        wantsScopedAudio = false
         audioEnabled = false
         onAudioMode(false)
         isolated = false; handle = nil; frames = 0; keyboardReports = 0; isRunning = false
@@ -178,18 +180,22 @@ final class HCIVoiceInput {
 
     func startAudio() {
         wantsAudio = true
+        wantsScopedAudio = false
         guard descriptor >= 0 else { return }
-        let status = iprc_hci_tool_status()
-        guard status == 0 else {
-            wantsAudio = false
-            onStatus(CaptureFailure.message(status), true)
-            return
-        }
         if !send(.startAudio) { onStatus("音频启动请求未发送，请检查按键接管连接", true) }
+    }
+
+    func startScopedAudio() {
+        if !isRunning { start(audio: false) }
+        guard isRunning else { return }
+        wantsAudio = false
+        wantsScopedAudio = true
+        if descriptor >= 0 { _ = send(.startScopedAudio); wantsScopedAudio = false }
     }
 
     func stopAudio() {
         wantsAudio = false
+        wantsScopedAudio = false
         if descriptor >= 0 { _ = send(.stopAudio) }
         audioEnabled = false
         onAudioMode(false)
@@ -233,7 +239,8 @@ final class HCIVoiceInput {
                 if isolated { onIsolation(false); onIsolation(true) }
             case .ready:
                 onStatus("目标按键接管进程已启动；音频可单独开启", true)
-                if wantsAudio { startAudio() }
+                if wantsScopedAudio { _ = send(.startScopedAudio); wantsScopedAudio = false }
+                else if wantsAudio { startAudio() }
             case .isolation(let ready):
                 isolated = ready; handle = nil
                 onIsolation(ready)
@@ -256,7 +263,9 @@ final class HCIVoiceInput {
                     onStatus("目标 HCI F7：\(frames) 帧", true)
                     publishDiagnostics()
                 }
-            case .status(let status): onStatus(status, true)
+            case .status(let status):
+                onStatus(status, true)
+                publishDiagnostics()
             case .failure(let error):
                 stop(); onStatus(error, false); return
             }

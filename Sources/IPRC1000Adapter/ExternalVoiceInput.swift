@@ -29,17 +29,20 @@ final class ExternalVoiceInput {
     private var previousSource: String?
     private static let weTypePrefix = "com.tencent.inputmethod.wetype"
     private var helper: Process?
-    private var helperInput: FileHandle?
+    private var helperWriter: PCMStreamWriter?
     private var helperOwnsAudioOnly = false
     private var helperOutput = ""
+    private var helperFirstAudioLogged = false
     private var helperFnHeld = false
     private var helperCancelled = false
+    private var warmup = VoiceWarmup()
+    private var helperStartupTimeout: DispatchWorkItem?
+    private var helperDrainTimeout: DispatchWorkItem?
     private var pendingShortcut: (KeyBinding, Bool)?
     private var pendingSamples: [Int16] = []
     private var pendingFinished = false
     private var pressGeneration = 0
     private var receivedSamplesInPress = false
-    private let helperQueue = DispatchQueue(label: "local.iprc1000.wechat-stream")
     var usingHelper: Bool { helper != nil || pendingShortcut != nil }
     var active: Bool { heldShortcut != nil || usingHelper }
 
@@ -100,10 +103,11 @@ final class ExternalVoiceInput {
     func finish() {
         if pendingShortcut != nil { pendingFinished = true; return }
         if helper != nil {
-            guard !finishing, let input = helperInput else { return }
+            guard !finishing, let writer = helperWriter else { return }
             finishing = true
-            helperInput = nil
-            helperQueue.async { try? input.close() }
+            watchHelperDrain()
+            if helperOwnsAudioOnly && !warmup.finish() { return }
+            writer.finish()
             return
         }
         guard heldShortcut != nil else { return }
@@ -138,11 +142,16 @@ final class ExternalVoiceInput {
         pendingSamples.removeAll()
         pendingFinished = false
         helperCancelled = true
+        helperStartupTimeout?.cancel(); helperStartupTimeout = nil
+        helperDrainTimeout?.cancel(); helperDrainTimeout = nil
         if helper != nil {
-            finish()
+            finishing = true
+            helperWriter?.cancel()
+            warmup = VoiceWarmup()
             if helperFnHeld { KeyEmitter.release(.modifierOnly([.function])) }
             helperFnHeld = false
             if helperOwnsAudioOnly { restoreInput() }
+            if helper?.isRunning == true { helper?.terminate() }
             return
         }
         generation += 1
@@ -158,14 +167,43 @@ final class ExternalVoiceInput {
 
     func append(_ samples: [Int16]) {
         if !samples.isEmpty { receivedSamplesInPress = true }
-        if pendingShortcut != nil { pendingSamples.append(contentsOf: samples); return }
-        guard let input = helperInput, !samples.isEmpty else { return }
+        if pendingShortcut != nil {
+            guard samples.count <= VoiceWarmup.capacity - pendingSamples.count else {
+                stop(); onStatus("下一句等待过久，已停止语音并恢复麦克风"); return
+            }
+            pendingSamples.append(contentsOf: samples); return
+        }
+        guard !finishing, helperWriter != nil, !samples.isEmpty else { return }
+        if helperOwnsAudioOnly {
+            do {
+                if let ready = try warmup.append(samples) { writePCM(ready) }
+            } catch {
+                stop(); onStatus("微信启动等待过久，已停止语音并恢复麦克风")
+            }
+        } else { writePCM(samples) }
+    }
+
+    private func writePCM(_ samples: [Int16]) {
+        guard let writer = helperWriter, !samples.isEmpty else { return }
         var littleEndian = samples.map { $0.littleEndian }
         let data = littleEndian.withUnsafeMutableBytes { Data($0) }
-        helperQueue.async {
-            do { try input.write(contentsOf: data) }
-            catch { Self.logger.error("PCM pipe write failed: \(error.localizedDescription, privacy: .public)") }
+        if !writer.append(data) {
+            stop()
+            onStatus("微信音频发送积压，已停止语音并恢复麦克风")
         }
+    }
+
+    private func watchHelperDrain() {
+        guard let process = helper else { return }
+        helperDrainTimeout?.cancel()
+        let timeout = DispatchWorkItem { [weak self, weak process] in
+            guard let self, let process, self.helper === process, self.finishing,
+                  !self.helperCancelled else { return }
+            self.stop()
+            self.onStatus("微信音频结束超时，已释放快捷键并恢复麦克风")
+        }
+        helperDrainTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
     }
 
     private func startWeChatHelper() -> String {
@@ -200,16 +238,32 @@ final class ExternalVoiceInput {
             DispatchQueue.main.async {
                 guard let self, self.helper === process else { return }
                 self.helperOutput += text
-                if self.helperOwnsAudioOnly, !self.helperFnHeld, !self.helperCancelled,
-                   self.helperOutput.contains("IPRC_AUDIO_READY") {
+                if !self.helperFirstAudioLogged, self.helperOutput.contains("IPRC_AUDIO_FIRST_BUFFER") {
+                    self.helperFirstAudioLogged = true
+                    Self.logger.notice("helper scheduled first PCM buffer")
+                }
+                if self.helperOwnsAudioOnly, !self.helperCancelled,
+                   self.helperOutput.contains("IPRC_AUDIO_READY"), self.warmup.helperReady() {
                     guard self.onBeforeFn() else {
                         self.stop()
                         self.onStatus("无法在微信之前拦截遥控器按键，已停止语音并恢复现场")
                         return
                     }
-                    KeyEmitter.emit(.modifierOnly([.function]))
-                    self.helperFnHeld = true
-                    self.onStatus("Fn 已按下，正在流式输入微信语音")
+                    let delay = self.helperFnHeld ? 0.0 : 0.35
+                    if !self.helperFnHeld {
+                        KeyEmitter.emit(.modifierOnly([.function]))
+                        self.helperFnHeld = true
+                    }
+                    Self.logger.notice("helper ready; Fn held; retaining PCM during IME warmup")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        guard self.helper === process, !self.helperCancelled,
+                              let buffered = self.warmup.release() else { return }
+                        self.helperStartupTimeout?.cancel(); self.helperStartupTimeout = nil
+                        self.writePCM(buffered.samples)
+                        Self.logger.notice("IME warmup complete; prefix samples=\(buffered.samples.count, privacy: .public) finish=\(buffered.finish, privacy: .public)")
+                        if buffered.finish { self.helperWriter?.finish() }
+                        self.onStatus("Fn 已按下，正在流式输入微信语音")
+                    }
                 }
             }
         }
@@ -220,6 +274,8 @@ final class ExternalVoiceInput {
             Self.logger.notice("helper exit pid=\(child.processIdentifier) code=\(code) detail=\(message, privacy: .public)")
             DispatchQueue.main.async {
                 guard let self, self.helper === child else { return }
+                self.helperStartupTimeout?.cancel(); self.helperStartupTimeout = nil
+                self.helperDrainTimeout?.cancel(); self.helperDrainTimeout = nil
                 output.fileHandleForReading.readabilityHandler = nil
                 let continuing = self.pendingShortcut != nil && code == 0
                 if self.helperFnHeld && !continuing {
@@ -228,9 +284,11 @@ final class ExternalVoiceInput {
                 }
                 if self.helperOwnsAudioOnly && self.pendingShortcut == nil { self.restoreInput() }
                 self.helper = nil
-                self.helperInput = nil
+                self.helperWriter?.cancel(); self.helperWriter = nil
                 self.finishing = false
-                self.onStatus(code == 0 ? (self.pendingShortcut == nil ? "微信流式会话结束，已恢复默认麦克风" : "上一段已结束，保留音频并接续下一段") : "微信语音启动失败：\(message.trimmingCharacters(in: .whitespacesAndNewlines))")
+                if !self.helperCancelled {
+                    self.onStatus(code == 0 ? (self.pendingShortcut == nil ? "微信流式会话结束，已恢复默认麦克风" : "上一段已结束，保留音频并接续下一段") : "微信语音启动失败：\(message.trimmingCharacters(in: .whitespacesAndNewlines))")
+                }
                 if self.pendingShortcut != nil {
                     if let pending = self.pendingShortcut {
                         let samples = self.pendingSamples
@@ -253,9 +311,22 @@ final class ExternalVoiceInput {
         }
         signal(SIGPIPE, SIG_IGN)
         helperOutput = ""
+        helperFirstAudioLogged = false
+        warmup = VoiceWarmup()
         helperCancelled = false
         helperOwnsAudioOnly = audioOnly
-        do { try process.run() } catch {
+        let writer: PCMStreamWriter
+        do {
+            writer = try PCMStreamWriter(input.fileHandleForWriting) { [weak self, weak process] message in
+                Self.logger.error("\(message, privacy: .public)")
+                DispatchQueue.main.async {
+                    guard let self, let process, self.helper === process, !self.helperCancelled else { return }
+                    self.stop()
+                    self.onStatus("微信音频管道中断，已释放快捷键并恢复麦克风")
+                }
+            }
+            try process.run()
+        } catch {
             output.fileHandleForReading.readabilityHandler = nil
             restoreInput()
             return "无法启动微信流式组件：\(error.localizedDescription)"
@@ -263,8 +334,18 @@ final class ExternalVoiceInput {
         helper = process
         let foreground = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
         Self.logger.notice("helper launched pid=\(process.processIdentifier) executable=\(executable.path, privacy: .public) foreground=\(foreground, privacy: .public)")
-        helperInput = input.fileHandleForWriting
+        helperWriter = writer
         finishing = false
+        if audioOnly {
+            let timeout = DispatchWorkItem { [weak self, weak process] in
+                guard let self, let process, self.helper === process,
+                      !self.helperCancelled, !self.warmup.isStreaming else { return }
+                self.stop()
+                self.onStatus("微信音频组件未及时就绪，已停止语音并恢复麦克风")
+            }
+            helperStartupTimeout = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timeout)
+        }
         return "微信流式会话已启动，遥控器音频将实时送入微信"
     }
 

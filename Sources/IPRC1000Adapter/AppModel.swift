@@ -239,8 +239,14 @@ final class AppModel: ObservableObject {
     }
 
     func startDeviceVoice() {
+        inputRequested = true
+        cursorInputStatus = "正在启用蓝牙语音输入，等待目标遥控器接管"
         if !deviceVoice.isRunning { hid.stop() }
         deviceVoice.start(audio: true)
+    }
+    func startScopedDeviceVoice() {
+        if !deviceVoice.isRunning { hid.stop() }
+        deviceVoice.startScopedAudio()
     }
     func startKeyboardAdaptation() {
         if !deviceVoice.isRunning { hid.stop() }
@@ -258,7 +264,7 @@ final class AppModel: ObservableObject {
     }
     func enableTranscription() {
         guard deviceVoiceActive, deviceAudioEnabled else {
-            cursorInputStatus = "请先启动临时蓝牙语音捕获"
+            cursorInputStatus = "请先启用蓝牙语音输入"
             return
         }
         inputRequested = true

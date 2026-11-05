@@ -7,6 +7,32 @@ import IOKit.hid
 enum SelfTest {
     static func run() -> Bool {
         var failures: [String] = []
+        var warmup = VoiceWarmup()
+        do {
+            let first = try warmup.append([1, 2])
+            check(first == nil && warmup.helperReady() && !warmup.helperReady(),
+                  "PCM waits for a single helper readiness event", into: &failures)
+            let second = try warmup.append([3, 4])
+            check(second == nil && !warmup.finish(),
+                  "short utterance finish waits for IME warmup", into: &failures)
+            let release = warmup.release()
+            check(release?.samples == [1, 2, 3, 4] && release?.finish == true && warmup.release() == nil,
+                  "all startup PCM drains once before finishing", into: &failures)
+            warmup = VoiceWarmup()
+            _ = warmup.helperReady()
+            _ = try warmup.append([5])
+            check(warmup.release()?.samples == [5] && warmup.isStreaming,
+                  "startup switches to streaming after warmup", into: &failures)
+            let live = try warmup.append([6, 7])
+            check(live == [6, 7] && warmup.finish(),
+                  "live PCM streams immediately and finish can close", into: &failures)
+            warmup = VoiceWarmup()
+            _ = try warmup.append(Array(repeating: 1, count: VoiceWarmup.capacity))
+            do {
+                _ = try warmup.append([2])
+                failures.append("startup buffer must reject overflow")
+            } catch VoiceWarmup.Failure.overflow { }
+        } catch { failures.append("voice warmup regression: \(error)") }
         var speechSegments = SpeechSegments()
         let firstSpeech = speechSegments.begin()
         speechSegments.endInput()
@@ -324,6 +350,7 @@ enum SelfTest {
               && CaptureCommand(rawValue: 65) == .startAudio
               && CaptureCommand(rawValue: 83) == .stopAudio
               && CaptureCommand(rawValue: 82) == .retryAudio
+              && CaptureCommand(rawValue: 68) == .startScopedAudio
               && CaptureCommand(rawValue: 0) == nil,
               "only fixed audio lifecycle commands are accepted", into: &failures)
         check(CaptureFailure.message(-1001).contains("按键接管可独立")

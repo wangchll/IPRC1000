@@ -355,14 +355,15 @@ func streamLivePCM() throws {
     defer {
         if fnHeld { try? postFnModifier(keyCode: keyCode, flags: flags, keyDown: false) }
     }
-    if audioOnly { print("IPRC_AUDIO_READY"); fflush(stdout) }
-    Thread.sleep(forTimeInterval: startDelay)
+    if !audioOnly { Thread.sleep(forTimeInterval: startDelay) }
     try engine.start()
     player.play()
+    if audioOnly { print("IPRC_AUDIO_READY"); fflush(stdout) }
 
     let pending = DispatchGroup()
+    var scheduledAny = false
     while true {
-        let data = FileHandle.standardInput.readData(ofLength: 16_000)
+        let data = FileHandle.standardInput.readData(ofLength: 640)
         if data.isEmpty { break }
         let frames = data.count / MemoryLayout<Int16>.size
         guard frames > 0,
@@ -376,6 +377,10 @@ func streamLivePCM() throws {
         pending.enter()
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
             pending.leave()
+        }
+        if audioOnly && !scheduledAny {
+            print("IPRC_AUDIO_FIRST_BUFFER"); fflush(stdout)
+            scheduledAny = true
         }
     }
     guard pending.wait(timeout: .now() + 8) == .success else {

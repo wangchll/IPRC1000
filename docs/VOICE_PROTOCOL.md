@@ -44,30 +44,23 @@ Float 转换为 `Float(Int16(bitPattern: littleEndianWord)) / 32768`，不默认
 | `F7 01 …`，包含 ID | 652 | 10–11 | 12 |
 | `01 …`，不含 ID | 651 | 9–10 | 11 |
 
-这两种是解析兼容布局，不意味着本机 IOHID 已交付隐藏 F7。当前生产入口使用 Apple 工具转换后完整 ACL 行，去掉 `A1` 后传递 652 字节报告。
+这两种是解析兼容布局，不意味着本机 IOHID 已交付隐藏 F7。当前生产入口直接读取系统原生捕获封装，重组目标 ACL/L2CAP 后去掉 `A1`，传递 652 字节报告。
 
-## HCI 行筛选
+## 原生捕获与目标筛选
 
-固定调用已验证 Apple 签名的 PacketLogger：
+生产入口为 `NativeCapture.m`，直接连接 `com.apple.bluetooth.BTPacketLogger`。先以空请求接收 `RequiresAuth`，再发送正常系统授权的 `Authentication` 外部形式；不期待此认证消息的单独回复，不修改系统授权规则。
 
-```text
-/Applications/PacketLogger.app/Contents/Resources/packetlogger convert -s -f itpanhsr
-```
+`packet` 数据使用12字节长度/时间头、1字节记录类型及HCI负载；过滤器验证完整封装长度并兼容头部大小端。类型1为HCI事件、2为发出ACL、3为接收ACL。
 
-stdout 为按 tab 分隔的 `ISO time / packet type / address / name / handle / summary / raw`。
-解析器允许 Apple 输出的尾部 tab；要求 `HID Interrupt Receive`、目标地址和十六进制 handle。
-显示名称可能与系统配对名称不同，所以不能将该列当作逐帧身份条件。
+1. 只从目标地址的成功 Classic Connection Complete 学习handle；断连与handle复用会清除原链路状态。
+2. 从双向L2CAP信令中的PSM `0x13`连接请求及成功响应学习入站Interrupt CID；不依赖设备名称列或固定CID。
+3. 仅重组已确认handle/CID上的入站ACL：PB 0/2开始，PB 1续包。固定657字节缓冲包含4字节L2CAP头及653字节HID负载。
+4. 完成后验证 `A1 F7 01`、长度与320样本；不扫描PCM中的F7字节。溢出、新PDU、通道变化或断连丢弃不完整帧。
+5. 目标队列最多64帧，溢出丢最旧帧并计数；等目标键盘独占就绪后再交付前台，避免冷连接早期音频被消费后丢弃。
 
-对原始字段进一步检查：
+接收前需要观察完整连接及通道协商。中途开始捕获已建立的连接时不能凭空获知CID，等待下次设备重连；这也是音频计数为零不能单独证明设备未发送语音的原因。
 
-1. ACL handle 与行中 handle 一致；广播位为 0，PB 为当前支持的 0 或 2。
-2. ACL 长度、L2CAP 长度与实际完整数据一致；CID 必须是动态通道（≥`0x0040`）。
-3. HIDP 是 `A1`，音频为 `F7 01`，样本计数 320，总长度 661（4 字节 ACL 头 + 4 字节 L2CAP 头 + 653 负载）。
-4. 通道归属依赖 Apple 的 HID Interrupt 分类；不自行扫描任意字节找 F7，不接受尚未重组的分片或任意 CID 上的相同字节。
-5. 根捕获进程只向前台转发目标 F7；键盘另由目标 IOHID 独占入口交付。HCI 解析器支持键盘格式仅用于回放校验。
-
-首次实时捕获不用 `-b`。音频子进程重启且已有实时帧水位时才加 `-b`，按 Apple 行时间、handle/sequence 去重，
-拒绝已转发时间之前的音频。只比较捕获时间的相对先后，不将其与系统墙钟硬比较；历史 Apple 转换存在时区显示差异。
+历史文本行解析器保留用于旧抓包离线回归，不参与当前实时接收，不要求安装PacketLogger。
 
 ## 连续音频与停止判定
 
@@ -83,6 +76,6 @@ stdout 为按 tab 分隔的 `ISO time / packet type / address / name / handle / 
 - deviceTime、bufferState、reserved 的确切语义与丢序号来源。
 - 采样率协商、完整私有控制协议和其他固件格式。
 - Intel 真机上的蓝牙、权限与语音行为；交叉构建不能代替真机。
-- 不同系统/PacketLogger 版本对行格式和隐藏报告的兼容性。
+- 不同macOS版本的私有捕获服务和隐藏报告交付兼容性。
 
-实现入口见 [VOICE_IMPLEMENTATION.md](VOICE_IMPLEMENTATION.md)，实际验证见 [REVIEW_20261103.md](REVIEW_20261103.md)。
+实现入口见 [VOICE_IMPLEMENTATION.md](VOICE_IMPLEMENTATION.md)，构建与验证入口见 [DEVELOPMENT.md](DEVELOPMENT.md)。

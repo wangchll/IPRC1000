@@ -14,6 +14,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusPopover = NSPopover()
 
     static func main() {
+        if CommandLine.arguments.count == 2, CommandLine.arguments[1] == "--scoped-hci-trace-guard" {
+            Darwin.exit(ScopedHCITraceGuard.run())
+        }
+        if CommandLine.arguments == [CommandLine.arguments[0], "--scoped-hci-trace-guard", "--session"] {
+            Darwin.exit(ScopedHCITraceGuard.run(session: true))
+        }
         if (CommandLine.arguments.count == 3 || (CommandLine.arguments.count == 4 && CommandLine.arguments[1] == "--replay-wechat-rapid")),
            ["--replay-wechat", "--replay-wechat-rapid"].contains(CommandLine.arguments[1]) {
             Darwin.exit(WeChatReplay.run(path: CommandLine.arguments[2], rapid: CommandLine.arguments[1] == "--replay-wechat-rapid",
@@ -826,16 +832,22 @@ struct SettingsView: View {
                         .disabled(model.deviceVoiceActive)
                     Button("停止接管") { model.stopDeviceVoice() }
                 }
-                Text("按键适配独立运行，无需 PacketLogger；启动接管需要系统认证，不安装常驻服务。蓝牙语音另需 Apple PacketLogger。")
+                Text("仅接管目标遥控器按键。语音无需 PacketLogger 或蓝牙描述文件，不安装常驻服务。")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
-                    Button("启动临时蓝牙语音") { model.startDeviceVoice() }
+                    Button("启用蓝牙语音输入") { model.startDeviceVoice() }
                         .disabled(model.deviceAudioEnabled)
                     Button("停止语音") { model.stopDeviceAudio() }
                         .disabled(!model.deviceAudioEnabled)
                     Button("重试音频接收") { model.retryDeviceAudio() }
                         .disabled(!model.deviceAudioEnabled)
                 }
+                #if DEBUG
+                Button("验证免描述文件接收（限时5分钟）") { model.startScopedDeviceVoice() }
+                    .disabled(model.deviceAudioEnabled)
+                #endif
+                Text("启用语音期间临时开启本机蓝牙诊断，仅处理目标遥控器音频；不写抓包文件，停止语音或退出后恢复。正常输入持续到主动停止。")
+                    .font(.caption).foregroundStyle(.secondary)
                 Text(model.deviceVoiceStatus).font(.callout).textSelection(.enabled)
                 Text(model.voiceInputDiagnostics)
                     .font(.callout.monospacedDigit()).textSelection(.enabled)
@@ -879,7 +891,7 @@ struct SettingsView: View {
                 Label("使用方式", systemImage: "info.circle.fill").font(.headline)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("1. 保持本 App 在菜单栏运行。")
-                    Text("2. 仅使用按键时，点击“启用独占按键适配”。语音另需启动临时蓝牙语音，选择识别方式，再启用光标输入。")
+                    Text("2. 仅使用按键时，点击“启用独占按键适配”。语音输入先选择识别方式，再点击“启用蓝牙语音输入”。")
                     Text("3. 点击目标输入框，按住遥控器麦克风键说话，松开结束。微信语音输入的麦克风使用“自动检测”。")
                     Text("如仅用于通话或录音，请把目标软件的麦克风选为“BlackHole 2ch”。")
                     Text("不要同时把系统扬声器输出设为 BlackHole，否则你会听不到声音；如需监听，请另建多输出设备。")

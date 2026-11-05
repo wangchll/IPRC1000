@@ -6,7 +6,7 @@
 
 ## 下载与依赖
 
-从 [GitHub Releases](https://github.com/wangchll/IPRC1000/releases/latest) 下载 **v0.3.1**，按芯片选择 `AppleSilicon` 或 `Intel` 安装包。
+从 [GitHub Releases](https://github.com/wangchll/IPRC1000/releases/latest) 下载 **v0.3.2**，按芯片选择 `AppleSilicon` 或 `Intel` 安装包。
 
 | 使用方式 | 需要安装 |
 | --- | --- |

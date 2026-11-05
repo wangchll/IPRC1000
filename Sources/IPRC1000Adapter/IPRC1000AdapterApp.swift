@@ -514,46 +514,39 @@ struct SettingsView: View {
                 Spacer()
             }
 
-            HStack(alignment: .top, spacing: 14) {
-                VStack(spacing: 10) {
-                    ForEach(SettingsSection.allCases) { item in
-                        Button {
-                            section = item
-                        } label: {
+            HStack(spacing: 6) {
+                ForEach(SettingsSection.allCases) { item in
+                    Button {
+                        section = item
+                    } label: {
+                        VStack(spacing: 6) {
                             Image(systemName: item.icon)
                                 .font(.system(size: 17, weight: .semibold))
-                                .frame(width: 46, height: 46)
-                                .foregroundStyle(section == item ? .blue : .secondary)
-                                .background(
-                                    section == item ? Color.blue.opacity(0.13) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 13)
-                                )
-                                .overlay {
-                                    if section == item {
-                                        RoundedRectangle(cornerRadius: 13)
-                                            .stroke(Color.blue.opacity(0.45))
-                                    }
-                                }
+                            Text(item.rawValue).font(.caption)
                         }
-                        .buttonStyle(.plain)
-                        .help(item.rawValue)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .foregroundStyle(section == item ? .blue : .secondary)
+                        .background(
+                            section == item ? Color.blue.opacity(0.13) : .clear,
+                            in: RoundedRectangle(cornerRadius: 13)
+                        )
                     }
+                    .buttonStyle(.plain)
                 }
-
-                VStack(spacing: 12) {
-                    Spacer(minLength: 8)
-                    HighlightableRemoteImage(highlightedKey: model.lastRemoteKey)
-                        .frame(width: 185, height: 470)
-                        .shadow(color: .black.opacity(0.18), radius: 16, y: 10)
-                    Text("IPRC1000").font(.title2.bold())
-                    Text(model.lastRemoteKey.map { "已检测：\($0.title)" } ?? "按下遥控器按键进行测试")
-                        .font(.caption)
-                        .foregroundStyle(model.lastRemoteKey == nil ? Color.secondary : Color.cyan)
-                }
-                .frame(maxWidth: .infinity)
             }
 
-            Spacer()
+            VStack(spacing: 12) {
+                HighlightableRemoteImage(highlightedKey: model.lastRemoteKey)
+                    .frame(maxHeight: 470)
+                    .shadow(color: .black.opacity(0.18), radius: 16, y: 10)
+                Text("IPRC1000").font(.title2.bold())
+                Text(model.lastRemoteKey.map { "已检测：\($0.title)" } ?? "按下遥控器按键进行测试")
+                    .font(.caption)
+                    .foregroundStyle(model.lastRemoteKey == nil ? Color.secondary : Color.cyan)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
             HStack(spacing: 8) {
                 Circle().fill(model.hidReady ? .green : .orange).frame(width: 8, height: 8)
                 Text(model.hidReady ? "按键通道在线" : "等待遥控器连接")
@@ -570,19 +563,34 @@ struct SettingsView: View {
         .background(.ultraThinMaterial)
     }
 
-    @ViewBuilder
     private var detailView: some View {
-        switch section {
-        case .overview: overviewView
-        case .mapping: mappingView
-        case .diagnostics: diagnosticsView
+        VStack(alignment: .leading, spacing: 20) {
+            switch section {
+            case .overview:
+                pageHeader("功能总览", subtitle: "遥控器与适配功能的实时状态", icon: "slider.horizontal.3")
+            case .mapping:
+                pageHeader("按键映射", subtitle: "每个配置组独立保存按键动作", icon: "switch.2")
+            case .diagnostics:
+                pageHeader("连接诊断", subtitle: "查看按键、蓝牙语音与虚拟麦克风状态", icon: "waveform.path.ecg")
+            }
+
+            switch section {
+            case .overview:
+                ScrollView { overviewView }
+            case .mapping:
+                mappingView
+            case .diagnostics:
+                ScrollView { diagnosticsView }
+            }
         }
+        .padding(.top, 42)
+        .padding(.horizontal, 28)
+        .padding(.bottom, 22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var overviewView: some View {
         VStack(alignment: .leading, spacing: 20) {
-            pageHeader("功能总览", subtitle: "遥控器与适配功能的实时状态", icon: "slider.horizontal.3")
-
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
                 dashboardCard(
                     "设备连接", icon: "av.remote.fill", tint: .green,
@@ -619,18 +627,12 @@ struct SettingsView: View {
             }
             .padding(16)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
-
-            Spacer()
         }
-        .padding(.top, 42)
-        .padding(.horizontal, 28)
-        .padding(.bottom, 22)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var mappingView: some View {
         VStack(alignment: .leading, spacing: 14) {
-            pageHeader("按键映射", subtitle: "每个配置组独立保存按键动作", icon: "switch.2")
-
             mappingToolbar
 
             ScrollView {
@@ -676,18 +678,30 @@ struct SettingsView: View {
 
             profileTabs
         }
-        .padding(.top, 42)
-        .padding(.horizontal, 28)
-        .padding(.bottom, 22)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var mappingToolbar: some View {
-        HStack(spacing: 10) {
-            Label(mappings.activeProfile?.name ?? "配置组", systemImage: "square.stack.3d.up.fill")
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.blue)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Label(mappings.activeProfile?.name ?? "配置组", systemImage: "square.stack.3d.up.fill")
+                    .lineLimit(1)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.blue)
 
-            Spacer()
+                Spacer()
+
+                Button { importConfiguration() } label: {
+                    Label("导入", systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.bordered)
+                Button { exportConfiguration() } label: {
+                    Label("导出", systemImage: "square.and.arrow.up")
+                }
+                .buttonStyle(.bordered)
+                Button("恢复默认") { mappings.reset() }
+                    .buttonStyle(.bordered)
+            }
 
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -701,20 +715,9 @@ struct SettingsView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .frame(width: 255, height: 34)
+            .frame(height: 34)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
             .overlay { RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.22)) }
-
-            Button { importConfiguration() } label: {
-                Label("导入", systemImage: "square.and.arrow.down")
-            }
-            .buttonStyle(.bordered)
-            Button { exportConfiguration() } label: {
-                Label("导出", systemImage: "square.and.arrow.up")
-            }
-            .buttonStyle(.bordered)
-            Button("恢复默认") { mappings.reset() }
-                .buttonStyle(.bordered)
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
@@ -819,14 +822,13 @@ struct SettingsView: View {
 
     private var diagnosticsView: some View {
         VStack(alignment: .leading, spacing: 18) {
-            pageHeader("连接诊断", subtitle: "查看按键、蓝牙语音与虚拟麦克风状态", icon: "waveform.path.ecg")
-
             HStack(spacing: 14) {
                 diagnosticCard("按键通道", message: model.hidStatus, ready: model.hidReady, icon: "keyboard")
                 diagnosticCard("语音通道", message: model.voiceStatus, ready: model.voiceReady, icon: "mic.fill")
             }
 
             VStack(alignment: .leading, spacing: 12) {
+                Label("设备接管", systemImage: "av.remote.fill").font(.headline)
                 HStack {
                     Button("启用独占按键适配") { model.startKeyboardAdaptation() }
                         .disabled(model.deviceVoiceActive)
@@ -834,6 +836,13 @@ struct SettingsView: View {
                 }
                 Text("仅接管目标遥控器按键。语音无需 PacketLogger 或蓝牙描述文件，不安装常驻服务。")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+
+            VStack(alignment: .leading, spacing: 12) {
+                Label("蓝牙语音", systemImage: "mic.fill").font(.headline)
                 HStack {
                     Button("启用蓝牙语音输入") { model.startDeviceVoice() }
                         .disabled(model.deviceAudioEnabled)
@@ -848,9 +857,16 @@ struct SettingsView: View {
                 #endif
                 Text("启用语音期间临时开启本机蓝牙诊断，仅处理目标遥控器音频；不写抓包文件，停止语音或退出后恢复。正常输入持续到主动停止。")
                     .font(.caption).foregroundStyle(.secondary)
-                Text(model.deviceVoiceStatus).font(.callout).textSelection(.enabled)
-                Text(model.voiceInputDiagnostics)
-                    .font(.callout.monospacedDigit()).textSelection(.enabled)
+                DisclosureGroup("详细诊断") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(model.deviceVoiceStatus)
+                        Text(model.voiceInputDiagnostics).monospacedDigit()
+                    }
+                    .font(.callout)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+                }
                 HStack {
                     Label("实时麦克风电平", systemImage: "waveform")
                         .font(.headline).foregroundStyle(.purple)
@@ -859,13 +875,20 @@ struct SettingsView: View {
                         .font(.caption.bold()).foregroundStyle(model.voiceReady ? .green : .secondary)
                 }
                 ProgressView(value: Double(model.voiceLevel), total: 1).tint(.purple)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+
+            VStack(alignment: .leading, spacing: 12) {
+                Label("光标处语音输入", systemImage: "text.cursor").font(.headline)
                 Picker("识别方式", selection: $model.inputProvider) {
                     ForEach(VoiceInputProvider.allCases) { provider in
                         Text(provider.title).tag(provider)
                     }
                 }
                 if model.inputProvider == .externalIME {
-                    HStack {
+                    VStack(alignment: .leading, spacing: 8) {
                         Button("输入法快捷键：\(model.externalShortcut.title)") { editingVoiceShortcut = true }
                         Toggle("松开时再次发送（开关式快捷键）", isOn: $model.externalShortcutToggles)
                     }
@@ -877,8 +900,8 @@ struct SettingsView: View {
                         .disabled(model.inputRequested || !model.deviceAudioEnabled)
                     Button("停用输入") { model.stopVoiceInput() }
                     Button("打开浏览器测试光标输入") { model.testCursorInput() }
-                    Text(model.transcriptionStatus).font(.caption)
                 }
+                Text(model.transcriptionStatus).font(.caption)
                 Text(model.cursorInputStatus).font(.callout).textSelection(.enabled)
                 if !model.transcript.isEmpty {
                     Text(model.transcript).font(.body).textSelection(.enabled)
@@ -887,8 +910,7 @@ struct SettingsView: View {
             .padding(16)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
 
-            VStack(alignment: .leading, spacing: 10) {
-                Label("使用方式", systemImage: "info.circle.fill").font(.headline)
+            DisclosureGroup("使用方式") {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("1. 保持本 App 在菜单栏运行。")
                     Text("2. 仅使用按键时，点击“启用独占按键适配”。语音输入先选择识别方式，再点击“启用蓝牙语音输入”。")
@@ -902,11 +924,8 @@ struct SettingsView: View {
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
-            Spacer()
         }
-        .padding(.top, 42)
-        .padding(.horizontal, 28)
-        .padding(.bottom, 22)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private func pageHeader<Trailing: View>(
